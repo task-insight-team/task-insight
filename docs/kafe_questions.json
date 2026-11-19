@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "dataset": "(가상) 한빛센서텍 합성 데이터셋 (가상)",
+    "seed": 20261119,
+    "reference_date": "2026-11-19",
+    "notice": "모든 데이터는 가상 합성 데이터이며 실증 자료가 아님"
+  },
+  "data_files": [
+    "data/employees.csv",
+    "data/projects.csv",
+    "data/tasks.csv"
+  ],
+  "questions": [
+    {
+      "id": "Q1",
+      "question": "현재 기한을 초과한 미완료 업무는 몇 건인가?",
+      "answer_type": "integer"
+    },
+    {
+      "id": "Q2",
+      "question": "부서별 미완료 업무 수는?",
+      "answer_type": "mapping<department,int>"
+    },
+    {
+      "id": "Q3",
+      "question": "계획 대비 실제 MH가 가장 많이 초과된 프로젝트는?",
+      "answer_type": "project_id"
+    },
+    {
+      "id": "Q4",
+      "question": "예산 대비 비용 초과율이 가장 높은 프로젝트는?",
+      "answer_type": "project_id (+ 초과율)"
+    },
+    {
+      "id": "Q5",
+      "question": "완료율이 가장 낮은 프로젝트는?",
+      "answer_type": "project_id (+ 완료율)"
+    },
+    {
+      "id": "Q6",
+      "question": "확인이 필요한 누락 데이터는 몇 건인가?",
+      "answer_type": "integer"
+    },
+    {
+      "id": "Q7",
+      "question": "담당 업무가 가장 많이 배정된 직원은 누구인가?",
+      "answer_type": "employee_id"
+    }
+  ]
+}

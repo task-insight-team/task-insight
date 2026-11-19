@@ -1,0 +1,339 @@
+{
+  "meta": {
+    "dataset": "(가상) 한빛센서텍 합성 데이터셋 (가상)",
+    "seed": 20261119,
+    "reference_date": "2026-11-19",
+    "notice": "모든 데이터는 가상 합성 데이터이며 실증 자료가 아님"
+  },
+  "answers": [
+    {
+      "id": "Q1",
+      "answer": 15,
+      "unit": "건",
+      "answer_ids": [
+        "T054",
+        "T075",
+        "T078",
+        "T080",
+        "T087",
+        "T093",
+        "T103",
+        "T117",
+        "T118",
+        "T119",
+        "T120",
+        "T121",
+        "T132",
+        "T133",
+        "T136"
+      ],
+      "definition": "status != '완료' 이고 due_date 가 존재하며 due_date < 기준일(2026-11-19)인 업무 수. 보류·미착수 상태도 미완료에 포함. due_date 누락 업무는 판정 불가로 제외.",
+      "tolerance": "정확히 일치"
+    },
+    {
+      "id": "Q2",
+      "answer": {
+        "영업": 3,
+        "제조": 9,
+        "품질": 18,
+        "연구": 6,
+        "경영지원": 4,
+        "미배정": 4
+      },
+      "unit": "건",
+      "definition": "status != '완료' 업무를 담당자(assignee_id)의 소속 부서로 집계. 담당자 누락은 '미배정'.",
+      "supplementary": {
+        "unfinished_total": 44,
+        "unfinished_per_head": {
+          "영업": 0.38,
+          "제조": 0.45,
+          "품질": 2.57,
+          "연구": 0.6,
+          "경영지원": 0.8
+        }
+      },
+      "tolerance": "부서별 건수 정확히 일치"
+    },
+    {
+      "id": "Q3",
+      "answer": "P05",
+      "answer_name": "제어반 조립라인 반자동화",
+      "unit": "project_id",
+      "definition": "프로젝트별 MH 초과량 = Σ max(actual_mh − planned_mh, 0) (업무 단위 초과분 합). 최댓값 프로젝트.",
+      "supplementary": {
+        "P01": {
+          "mh_overrun_sum": 63.5,
+          "mh_net_diff_completed": 17.5,
+          "mh_ratio_completed": 1.0158
+        },
+        "P02": {
+          "mh_overrun_sum": 86.5,
+          "mh_net_diff_completed": 80.5,
+          "mh_ratio_completed": 1.1616
+        },
+        "P03": {
+          "mh_overrun_sum": 63.5,
+          "mh_net_diff_completed": 24.0,
+          "mh_ratio_completed": 1.0268
+        },
+        "P04": {
+          "mh_overrun_sum": 27.0,
+          "mh_net_diff_completed": 8.5,
+          "mh_ratio_completed": 1.0125
+        },
+        "P05": {
+          "mh_overrun_sum": 370.0,
+          "mh_net_diff_completed": 325.0,
+          "mh_ratio_completed": 1.6842
+        },
+        "P06": {
+          "mh_overrun_sum": 46.5,
+          "mh_net_diff_completed": 39.5,
+          "mh_ratio_completed": 1.1068
+        },
+        "P07": {
+          "mh_overrun_sum": 15.0,
+          "mh_net_diff_completed": -8.5,
+          "mh_ratio_completed": 0.9754
+        },
+        "P08": {
+          "mh_overrun_sum": 51.0,
+          "mh_net_diff_completed": 46.0,
+          "mh_ratio_completed": 1.1614
+        },
+        "P09": {
+          "mh_overrun_sum": 27.0,
+          "mh_net_diff_completed": 6.5,
+          "mh_ratio_completed": 1.0181
+        },
+        "P10": {
+          "mh_overrun_sum": 3.5,
+          "mh_net_diff_completed": -1.0,
+          "mh_ratio_completed": 0.9865
+        }
+      },
+      "robustness": {
+        "완료업무 순증(Σ actual−planned) 기준": "P05",
+        "완료업무 실적/계획 비율 기준": "P05"
+      },
+      "tolerance": "project_id 일치"
+    },
+    {
+      "id": "Q4",
+      "answer": "P01",
+      "answer_name": "고정밀 압력센서 PS-700 신제품 개발",
+      "unit": "project_id",
+      "answer_value": 0.3072,
+      "definition": "비용 초과율 = (Σ actual_mh×담당자 hourly_labor_cost + Σ actual_nonlabor_cost) / budget − 1. budget 은 projects 테이블에서 프로젝트당 1회만 사용. 기준일 누적 실적 기준.",
+      "supplementary": {
+        "P01": {
+          "budget": 88000000,
+          "actual_labor_cost": 51996700,
+          "actual_nonlabor_cost": 63040000,
+          "actual_total_cost": 115036700,
+          "cost_overrun_rate": 0.3072
+        },
+        "P02": {
+          "budget": 38000000,
+          "actual_labor_cost": 26255850,
+          "actual_nonlabor_cost": 17150000,
+          "actual_total_cost": 43405850,
+          "cost_overrun_rate": 0.1423
+        },
+        "P03": {
+          "budget": 147000000,
+          "actual_labor_cost": 46376900,
+          "actual_nonlabor_cost": 73490000,
+          "actual_total_cost": 119866900,
+          "cost_overrun_rate": -0.1846
+        },
+        "P04": {
+          "budget": 79000000,
+          "actual_labor_cost": 36254300,
+          "actual_nonlabor_cost": 14270000,
+          "actual_total_cost": 50524300,
+          "cost_overrun_rate": -0.3605
+        },
+        "P05": {
+          "budget": 89000000,
+          "actual_labor_cost": 40234350,
+          "actual_nonlabor_cost": 47640000,
+          "actual_total_cost": 87874350,
+          "cost_overrun_rate": -0.0126
+        },
+        "P06": {
+          "budget": 41000000,
+          "actual_labor_cost": 23199850,
+          "actual_nonlabor_cost": 13890000,
+          "actual_total_cost": 37089850,
+          "cost_overrun_rate": -0.0954
+        },
+        "P07": {
+          "budget": 41000000,
+          "actual_labor_cost": 19111550,
+          "actual_nonlabor_cost": 11790000,
+          "actual_total_cost": 30901550,
+          "cost_overrun_rate": -0.2463
+        },
+        "P08": {
+          "budget": 77000000,
+          "actual_labor_cost": 19465250,
+          "actual_nonlabor_cost": 33620000,
+          "actual_total_cost": 53085250,
+          "cost_overrun_rate": -0.3106
+        },
+        "P09": {
+          "budget": 53000000,
+          "actual_labor_cost": 22144800,
+          "actual_nonlabor_cost": 24380000,
+          "actual_total_cost": 46524800,
+          "cost_overrun_rate": -0.1222
+        },
+        "P10": {
+          "budget": 50000000,
+          "actual_labor_cost": 7199700,
+          "actual_nonlabor_cost": 3180000,
+          "actual_total_cost": 10379700,
+          "cost_overrun_rate": -0.7924
+        }
+      },
+      "tolerance": "project_id 일치, 초과율 ±0.005"
+    },
+    {
+      "id": "Q5",
+      "answer": "P10",
+      "answer_name": "습도센서 HS-50 2차 양산 이관",
+      "unit": "project_id",
+      "answer_value": 0.2,
+      "definition": "완료율 = status '완료' 업무 수 / 전체 업무 수 (건수 기준).",
+      "supplementary": {
+        "P01": {
+          "completed": 18,
+          "total": 18,
+          "completion_rate": 1.0,
+          "weighted_progress": 1.0
+        },
+        "P02": {
+          "completed": 14,
+          "total": 14,
+          "completion_rate": 1.0,
+          "weighted_progress": 1.0
+        },
+        "P03": {
+          "completed": 12,
+          "total": 17,
+          "completion_rate": 0.7059,
+          "weighted_progress": 0.8406
+        },
+        "P04": {
+          "completed": 8,
+          "total": 16,
+          "completion_rate": 0.5,
+          "weighted_progress": 0.7593
+        },
+        "P05": {
+          "completed": 12,
+          "total": 16,
+          "completion_rate": 0.75,
+          "weighted_progress": 0.9403
+        },
+        "P06": {
+          "completed": 11,
+          "total": 15,
+          "completion_rate": 0.7333,
+          "weighted_progress": 0.9249
+        },
+        "P07": {
+          "completed": 9,
+          "total": 12,
+          "completion_rate": 0.75,
+          "weighted_progress": 0.8754
+        },
+        "P08": {
+          "completed": 8,
+          "total": 13,
+          "completion_rate": 0.6154,
+          "weighted_progress": 0.8172
+        },
+        "P09": {
+          "completed": 11,
+          "total": 14,
+          "completion_rate": 0.7857,
+          "weighted_progress": 0.9111
+        },
+        "P10": {
+          "completed": 3,
+          "total": 15,
+          "completion_rate": 0.2,
+          "weighted_progress": 0.3232
+        }
+      },
+      "robustness": {
+        "계획MH 가중 진행률 기준": "P10"
+      },
+      "tolerance": "project_id 일치"
+    },
+    {
+      "id": "Q6",
+      "answer": 7,
+      "unit": "건(업무)",
+      "answer_fields": 7,
+      "answer_ids": {
+        "assignee_id_missing": [
+          "T049",
+          "T063",
+          "T096",
+          "T103"
+        ],
+        "due_date_missing": [
+          "T061",
+          "T129",
+          "T142"
+        ]
+      },
+      "definition": "assignee_id 또는 due_date 가 비어 있는 업무 수. completed_at 공백(미완료 업무)과 issue_type 공백(부적합 대응 외 업무)은 구조적 공백이므로 제외.",
+      "tolerance": "업무 건수 정확히 일치"
+    },
+    {
+      "id": "Q7",
+      "answer": "E032",
+      "unit": "employee_id",
+      "answer_value": 9,
+      "answer_detail": {
+        "department": "품질",
+        "role": "선임"
+      },
+      "definition": "tasks.assignee_id 별 배정 업무 수(상태 무관) 최댓값 직원.",
+      "supplementary": {
+        "top5": [
+          {
+            "employee_id": "E032",
+            "task_count": 9,
+            "department": "품질"
+          },
+          {
+            "employee_id": "E031",
+            "task_count": 6,
+            "department": "품질"
+          },
+          {
+            "employee_id": "E033",
+            "task_count": 6,
+            "department": "품질"
+          },
+          {
+            "employee_id": "E035",
+            "task_count": 6,
+            "department": "품질"
+          },
+          {
+            "employee_id": "E042",
+            "task_count": 6,
+            "department": "연구"
+          }
+        ]
+      },
+      "tolerance": "employee_id 일치"
+    }
+  ]
+}

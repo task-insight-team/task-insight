@@ -1,0 +1,2 @@
+task_id,project_id,assignee_id,task_name,category,start_date,status,progress_percent,planned_mh,actual_mh
+T001,P01,E001,업무,설계,2026-10-01,완료,100,10,9.5
