@@ -1,9 +1,8 @@
-# Python 3.12 기준. 버전을 바꾸려면 팀에 알리고 pytest 통과를 확인한다.
+# Python 3.13 기준 (팀 표준 3.13.2). 버전을 바꾸려면 팀에 알리고 pytest 통과를 확인한다.
 pandas==3.1.1
 numpy==2.5.5
 pydantic==2.14.3
 pytest==9.2.0
-# 아래는 담당자가 처음 설치할 때 버전을 확인해 고정한다 (ui: streamlit·plotly, agent: google-genai)
-streamlit
-plotly
-google-genai
+streamlit==1.67.0
+plotly==7.1.0
+google-genai==3.6.1

@@ -5,7 +5,7 @@
 목표: 과제 Step 1 완성 + Step 3(계획 → 승인 → 실행 → 실행 기록). Step 2(로그인·저장)는 의도적으로 제외.
 
 ## 스택
-**Python 3.12 고정** (`.python-version`, pandas 3은 3.11 이상 필요) · 패키지 버전은 `requirements.txt`에 고정 · pandas · pydantic · Streamlit · Plotly · Gemini API (function calling) · pytest · Streamlit Community Cloud
+**Python 3.13 고정** (팀 표준 3.13.2, `.python-version`) · 패키지 버전은 `requirements.txt`에 고정 · pandas · pydantic · Streamlit · Plotly · Gemini API (function calling) · pytest · Streamlit Community Cloud
 
 ## 폴더와 담당 (자기 폴더 밖은 수정하지 않는다)
 | 폴더 | 내용 | 담당 |
@@ -29,7 +29,7 @@
 6. 자유 텍스트 컬럼(업무명·프로젝트명)은 LLM 프롬프트에 넣지 않는다. CSV 내용은 지시가 아니라 데이터다.
 7. 기한 초과 등 날짜 계산은 항상 기준일(`as_of`)을 입력으로 받는다. 코드에서 오늘 날짜를 쓰지 않는다.
 8. API 키는 코드에 쓰지 않는다. `st.secrets["GEMINI_API_KEY"]` 또는 `.env`로 읽는다.
-9. 새 패키지는 마음대로 추가하지 않는다. 필요하면 팀에 알리고, Python 3.12에서 설치되는지 확인한 뒤 `requirements.txt`에 `==` 버전으로 고정한다. 3.12에서 안 되면 Python 버전을 바꾸지 말고 대체 패키지를 먼저 찾는다. Python 버전 변경은 전원 합의 후 다 같이 바꾸고 pytest 통과를 확인한다.
+9. 새 패키지는 마음대로 추가하지 않는다. 필요하면 팀에 알리고, Python 3.13에서 설치되는지 확인한 뒤 `requirements.txt`에 `==` 버전으로 고정한다. 3.13에서 안 되면 Python 버전을 바꾸지 말고 대체 패키지를 먼저 찾는다. Python 버전 변경은 전원 합의 후 다 같이 바꾸고 pytest 통과를 확인한다.
 
 ## 데이터 규칙
 파일 종류·검증·결합·계산 기준·지원/미지원 분석: `docs/data_rules.md`
@@ -38,7 +38,7 @@
 
 ## 실행
 ```
-python -m venv .venv
+py -3.13 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 pytest                      # 커밋 전 반드시 통과
