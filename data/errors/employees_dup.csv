@@ -1,0 +1,4 @@
+employee_id,department,role,weekly_capacity_mh,hourly_labor_cost
+E001,영업,팀장,24,74100
+E001,제조,사원,36,40000
+E002,영업,책임,32,59200

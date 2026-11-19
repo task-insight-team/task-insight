@@ -1,0 +1,411 @@
+"""CSV 업로드 검증, 표 결합, 전처리.
+
+흐름: load_dataset({파일이름: bytes}) -> LoadResult(dataset, reports, join)
+- 파일마다 어떤 표(tasks·employees·projects·generic)인지 컬럼으로 판단하고 검증한다.
+- 표준 표 3개는 업무 기준으로 다대일 결합한다. 결합 후 행 수가 그대로인지 확인한다.
+- 원본 파일·원본 DataFrame은 수정하지 않는다. 문제는 예외 대신 Issue로 알린다.
+- 숨은 컬럼: "_row"(원본 데이터 행 번호, 1부터), "_invalid"(형식 오류 행, 계산에서 제외).
+"""
+
+from __future__ import annotations
+
+import io
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Union
+
+import pandas as pd
+
+from contracts import (
+    ALLOWED_VALUES,
+    CHECK_IF_MISSING,
+    DATE_COLUMNS,
+    DATE_FORMAT,
+    DISPLAY_NAMES,
+    ID_COLUMN,
+    MAX_ROWS,
+    MAX_UPLOAD_BYTES,
+    NONCONFORMANCE_CATEGORY,
+    NUMBER_COLUMNS,
+    REQUIRED_VALUES,
+    STATUS_DONE,
+    TABLE_COLUMNS,
+    UNASSIGNED,
+    CleaningResult,
+    ColumnInfo,
+    Issue,
+    JoinReport,
+    ValidationReport,
+)
+
+Source = Union[bytes, str, Path]
+MAX_LISTED_ROWS = 50
+NUMBER_RE = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
+
+
+# ---------------------------------------------------------------------------
+# 결과 묶음
+# ---------------------------------------------------------------------------
+@dataclass
+class Dataset:
+    """분석 대상. main은 결합된 업무 표(standard) 또는 일반 CSV(generic)."""
+    kind: str  # "standard" | "generic"
+    main: pd.DataFrame
+    employees: Optional[pd.DataFrame] = None
+    projects: Optional[pd.DataFrame] = None
+
+    @classmethod
+    def generic(cls, df: pd.DataFrame) -> "Dataset":
+        return cls(kind="generic", main=df)
+
+    def table(self, name: str) -> Optional[pd.DataFrame]:
+        return {"main": self.main, "employees": self.employees, "projects": self.projects}.get(name)
+
+
+@dataclass
+class LoadResult:
+    dataset: Optional[Dataset]
+    reports: list[ValidationReport] = field(default_factory=list)
+    join: Optional[JoinReport] = None
+    errors: list[Issue] = field(default_factory=list)  # 파일 조합 자체의 문제
+
+    @property
+    def ok(self) -> bool:
+        return self.dataset is not None
+
+
+# ---------------------------------------------------------------------------
+# 도우미
+# ---------------------------------------------------------------------------
+def _show(col: str) -> str:
+    return DISPLAY_NAMES.get(col, col)
+
+
+def _issue(level: str, code: str, message: str, mask: pd.Series, df: pd.DataFrame) -> Issue:
+    hit = df.loc[mask, "_row"].tolist()
+    return Issue(level=level, code=code, message=message, count=len(hit), rows=[int(r) for r in hit[:MAX_LISTED_ROWS]])
+
+
+def _fail(filename: str, code: str, message: str, encoding: Optional[str] = None) -> tuple[None, ValidationReport]:
+    return None, ValidationReport(filename=filename, ok=False, kind="generic", n_rows=0, n_cols=0, encoding=encoding,
+                                  issues=[Issue(level="error", code=code, message=message)])
+
+
+def _decode(raw: bytes) -> tuple[Optional[str], Optional[str]]:
+    for enc in ("utf-8-sig", "cp949"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return None, None
+
+
+def _detect_kind(columns: list[str]) -> str:
+    """컬럼이 가장 많이 겹치는 표준 표. ID 컬럼이 있고 2개 이상 겹쳐야 인정."""
+    best, best_score = "generic", 1
+    for kind, cols in TABLE_COLUMNS.items():
+        score = len(set(columns) & set(cols))
+        if ID_COLUMN[kind] in columns and score > best_score:
+            best, best_score = kind, score
+    return best
+
+
+def _dtype(series: pd.Series) -> str:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "date"
+    if pd.api.types.is_numeric_dtype(series):
+        return "number"
+    return "text"
+
+
+def _report(df: pd.DataFrame, filename: str, kind: str, encoding: Optional[str], issues: list[Issue]) -> ValidationReport:
+    visible = [c for c in df.columns if not c.startswith("_")]
+    columns = [ColumnInfo(name=c, dtype=_dtype(df[c]), missing=int(df[c].isna().sum())) for c in visible]
+    ok = not any(i.level == "error" for i in issues)
+    return ValidationReport(filename=filename, ok=ok, kind=kind, n_rows=len(df), n_cols=len(visible),
+                            encoding=encoding, columns=columns, issues=issues)
+
+
+def _to_number(df: pd.DataFrame, col: str, issues: list[Issue], allow_negative: bool = False) -> None:
+    text = df[col]
+    clean = text.fillna("").str.replace(",", "", regex=False)
+    bad = text.notna() & ~clean.str.match(NUMBER_RE)
+    if bad.any():
+        issues.append(_issue("warning", "invalid_number",
+                             f"'{col}'에 숫자가 아닌 값이 있습니다 (예: N/A, 없음). 해당 행은 계산에서 제외합니다.", bad, df))
+        df.loc[bad, "_invalid"] = True
+    df[col] = pd.to_numeric(clean.where(~bad & text.notna()), errors="coerce").astype("Float64")
+    if not allow_negative:
+        neg = (df[col] < 0).fillna(False).astype(bool)
+        if neg.any():
+            issues.append(_issue("warning", "negative_number", f"'{col}'에 음수가 있습니다. 해당 행은 계산에서 제외합니다.",
+                                 neg, df))
+            df.loc[neg, "_invalid"] = True
+
+
+# ---------------------------------------------------------------------------
+# 1. 파일 하나 읽기
+# ---------------------------------------------------------------------------
+def read_table(source: Source, filename: str = "") -> tuple[Optional[pd.DataFrame], ValidationReport]:
+    """CSV 하나를 읽고 검증한다. error가 있으면 DataFrame 대신 None."""
+    raw = source if isinstance(source, bytes) else Path(source).read_bytes()
+    filename = filename or (Path(source).name if not isinstance(source, bytes) else "")
+
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return _fail(filename, "too_large", f"파일이 너무 큽니다. {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 이하만 올릴 수 있습니다.")
+    if not raw.strip():
+        return _fail(filename, "empty_file", "빈 파일입니다. 헤더와 데이터가 있는 CSV를 올려 주세요.")
+    text, encoding = _decode(raw)
+    if text is None:
+        return _fail(filename, "encoding", "글자 인코딩을 읽을 수 없습니다. UTF-8 또는 CP949(엑셀 기본) CSV만 지원합니다.")
+    try:
+        df = pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False, skipinitialspace=True)
+    except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+        return _fail(filename, "parse_error", f"CSV 형식을 읽을 수 없습니다: {exc}", encoding)
+
+    df.columns = [str(c).strip() for c in df.columns]
+    if len(df) == 0:
+        return _fail(filename, "no_rows", "헤더만 있고 데이터 행이 없습니다.", encoding)
+    if len(df) > MAX_ROWS:
+        return _fail(filename, "too_many_rows", f"행이 너무 많습니다({len(df):,}행). {MAX_ROWS:,}행 이하만 분석합니다.", encoding)
+    if len(set(df.columns)) != len(df.columns):
+        return _fail(filename, "duplicate_headers", "같은 이름의 컬럼이 두 번 이상 있습니다.", encoding)
+    if any(c.startswith("_") for c in df.columns):
+        return _fail(filename, "reserved_header", "'_'로 시작하는 컬럼 이름은 쓸 수 없습니다.", encoding)
+
+    for col in df.columns:
+        df[col] = df[col].str.strip().replace("", pd.NA)
+    df.insert(0, "_row", range(1, len(df) + 1))
+    df["_invalid"] = False
+
+    kind = _detect_kind(list(df.columns))
+    if kind == "generic":
+        return _validate_generic(df, filename, encoding)
+    return _validate_standard(df, kind, filename, encoding)
+
+
+def _validate_standard(df: pd.DataFrame, kind: str, filename: str, encoding: Optional[str]):
+    issues: list[Issue] = []
+    missing = [c for c in TABLE_COLUMNS[kind] if c not in df.columns]
+    if missing:
+        report = _report(df, filename, kind, encoding, [Issue(
+            level="error", code="missing_columns",
+            message=f"{kind} 파일에 필요한 컬럼이 없습니다: {', '.join(missing)}")])
+        return None, report
+
+    req = REQUIRED_VALUES[kind]
+    miss = df[req].isna().any(axis=1)
+    if miss.any():
+        issues.append(_issue("warning", "missing_values", f"꼭 있어야 할 값이 비어 있습니다 ({', '.join(req)}). 해당 행은 계산에서 제외합니다.",
+                             miss, df))
+        df.loc[miss, "_invalid"] = True
+
+    for col in CHECK_IF_MISSING[kind]:
+        m = df[col].isna()
+        if m.any():
+            note = f" ({UNASSIGNED})" if col == "assignee_id" else ""
+            issues.append(_issue("warning", "needs_check",
+                                 f"'{col}'({_show(col)})이 비어 있는 행이 있습니다{note}. 값은 그대로 두고 확인 필요로 표시합니다.", m, df))
+
+    for col in DATE_COLUMNS[kind]:
+        text = df[col]
+        parsed = pd.to_datetime(text, format=DATE_FORMAT, errors="coerce")
+        bad = text.notna() & parsed.isna()
+        if bad.any():
+            issues.append(_issue("warning", "invalid_date", f"'{col}' 날짜 형식이 YYYY-MM-DD가 아닙니다. 해당 행은 계산에서 제외합니다.",
+                                 bad, df))
+            df.loc[bad, "_invalid"] = True
+        df[col] = parsed
+
+    for col in NUMBER_COLUMNS[kind]:
+        _to_number(df, col, issues)
+
+    for col, allowed in ALLOWED_VALUES[kind].items():
+        bad = df[col].notna() & ~df[col].isin(allowed)
+        if bad.any():
+            issues.append(_issue("warning", "invalid_value", f"'{col}' 값은 {', '.join(allowed)} 중 하나여야 합니다. 해당 행은 계산에서 제외합니다.",
+                                 bad, df))
+            df.loc[bad, "_invalid"] = True
+
+    if kind == "tasks":
+        issues.extend(_task_consistency(df))
+    issues.extend(_duplicate_issues(df, ID_COLUMN[kind]))
+    return df, _report(df, filename, kind, encoding, issues)
+
+
+def _task_consistency(df: pd.DataFrame) -> list[Issue]:
+    issues = []
+    done = (df["status"] == STATUS_DONE).fillna(False).astype(bool)
+    nonconf = (df["category"] == NONCONFORMANCE_CATEGORY).fillna(False).astype(bool)
+    checks = [
+        ("warning", "due_before_start", "기한이 시작일보다 앞선 업무가 있습니다.", df["due_date"] < df["start_date"]),
+        ("warning", "done_without_date", "상태는 '완료'인데 완료일이 비어 있습니다.", done & df["completed_at"].isna()),
+        ("warning", "date_without_done", "완료일이 있는데 상태가 '완료'가 아닙니다 (상태 기준으로 계산).", ~done & df["completed_at"].notna()),
+        ("warning", "issue_type_missing", f"'{NONCONFORMANCE_CATEGORY}' 업무인데 문제유형이 비어 있습니다.", nonconf & df["issue_type"].isna()),
+        ("info", "structural_blank", "미완료 업무의 완료일 빈칸은 정상입니다 (구조적 공백).", ~done & df["completed_at"].isna()),
+        ("info", "structural_blank", f"'{NONCONFORMANCE_CATEGORY}'가 아닌 업무의 문제유형 빈칸은 정상입니다 (구조적 공백).",
+         ~nonconf & df["issue_type"].isna()),
+    ]
+    for level, code, msg, mask in checks:
+        mask = mask.fillna(False).astype(bool)
+        if mask.any():
+            issues.append(_issue(level, code, msg, mask, df))
+    return issues
+
+
+def _validate_generic(df: pd.DataFrame, filename: str, encoding: Optional[str]):
+    issues: list[Issue] = []
+    for col in [c for c in df.columns if not c.startswith("_")]:
+        nonnull = df[col].dropna()
+        if nonnull.empty:
+            continue
+        if nonnull.str.replace(",", "", regex=False).str.match(NUMBER_RE).mean() >= 0.5:
+            _to_number(df, col, issues, allow_negative=True)
+    issues.extend(_duplicate_issues(df, None))
+    return df, _report(df, filename, "generic", encoding, issues)
+
+
+def _duplicate_issues(df: pd.DataFrame, id_col: Optional[str]) -> list[Issue]:
+    issues: list[Issue] = []
+    data_cols = [c for c in df.columns if not c.startswith("_")]
+    dup = df.duplicated(subset=data_cols, keep="first")
+    if dup.any():
+        issues.append(_issue("warning", "duplicate_rows", "완전히 같은 행이 중복되어 있습니다 (확인 후 첫 행만 남기고 제거 가능).",
+                             dup, df))
+    if id_col and id_col in df.columns:
+        exact = df.duplicated(subset=data_cols, keep=False)
+        dup_id = df[id_col].notna() & df.duplicated(subset=[id_col], keep=False) & ~exact
+        if dup_id.any():
+            issues.append(_issue("warning", "duplicate_id", f"'{id_col}'는 같은데 내용이 다른 행이 있습니다. 확인이 필요합니다.",
+                                 dup_id, df))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# 2. 전처리 (사용자가 확인한 뒤에만)
+# ---------------------------------------------------------------------------
+def clean(df: pd.DataFrame, drop_duplicates: bool = True, drop_invalid: bool = False) -> tuple[pd.DataFrame, CleaningResult]:
+    """전처리본을 만든다. 입력 df는 바꾸지 않는다."""
+    out = df.copy()
+    before = len(out)
+    notes: list[str] = []
+    removed_dup = removed_invalid = 0
+    if drop_duplicates:
+        data_cols = [c for c in out.columns if not c.startswith("_")]
+        dup = out.duplicated(subset=data_cols, keep="first")
+        removed_dup = int(dup.sum())
+        out = out.loc[~dup]
+        if removed_dup:
+            notes.append(f"완전 중복 행 {removed_dup}개 제거 (첫 행 유지)")
+    if drop_invalid:
+        bad = out["_invalid"].astype(bool)
+        removed_invalid = int(bad.sum())
+        out = out.loc[~bad]
+        if removed_invalid:
+            notes.append(f"형식 오류 행 {removed_invalid}개 제외")
+    return out.reset_index(drop=True), CleaningResult(before_rows=before, after_rows=len(out), removed_duplicates=removed_dup,
+                                                      removed_invalid=removed_invalid, notes=notes)
+
+
+# ---------------------------------------------------------------------------
+# 3. 여러 파일 읽고 결합
+# ---------------------------------------------------------------------------
+def load_dataset(files: dict[str, Source], drop_duplicates: bool = False) -> LoadResult:
+    """{파일이름: 내용}을 받아 검증·결합한다. drop_duplicates=True면 결합 전 완전 중복 행을 제거한다."""
+    reports: list[ValidationReport] = []
+    tables: dict[str, list[pd.DataFrame]] = {}
+    for name, src in files.items():
+        df, rep = read_table(src, name)
+        reports.append(rep)
+        if df is not None:
+            if drop_duplicates:
+                df, _ = clean(df, drop_duplicates=True)
+            tables.setdefault(rep.kind, []).append(df)
+
+    def fail(code: str, msg: str) -> LoadResult:
+        return LoadResult(dataset=None, reports=reports, errors=[Issue(level="error", code=code, message=msg)])
+
+    if any(not r.ok for r in reports):
+        return fail("file_errors", "읽을 수 없는 파일이 있습니다. 파일별 검증 결과를 확인해 주세요.")
+    if not tables:
+        return fail("no_files", "분석할 파일이 없습니다.")
+    for kind, dfs in tables.items():
+        if len(dfs) > 1:
+            return fail("duplicate_kind", f"같은 종류({kind}) 파일이 {len(dfs)}개입니다. 종류마다 하나씩만 올려 주세요.")
+
+    one = {k: v[0] for k, v in tables.items()}
+    if "generic" in one:
+        if len(one) > 1:
+            return fail("mixed_files", "표준 파일(업무·직원·프로젝트)과 일반 CSV는 함께 분석할 수 없습니다. 일반 CSV는 하나만 올려 주세요.")
+        return LoadResult(dataset=Dataset.generic(one["generic"]), reports=reports)
+    if "tasks" not in one:
+        if len(one) == 1:  # 직원표나 프로젝트표 하나만 → 일반 CSV처럼 분석
+            return LoadResult(dataset=Dataset.generic(next(iter(one.values()))), reports=reports)
+        return fail("tasks_required", "직원·프로젝트 파일을 결합하려면 업무(tasks) 파일이 필요합니다.")
+
+    dataset, join = build_dataset(one["tasks"], one.get("employees"), one.get("projects"))
+    return LoadResult(dataset=dataset, reports=reports, join=join)
+
+
+def build_dataset(tasks: pd.DataFrame, employees: Optional[pd.DataFrame], projects: Optional[pd.DataFrame]
+                  ) -> tuple[Optional[Dataset], JoinReport]:
+    """업무 기준으로 직원·프로젝트를 다대일 결합한다. 예산은 업무 행에 붙이지 않는다(중복 합산 방지)."""
+    issues: list[Issue] = []
+    view = tasks.copy()
+
+    def report(ok: bool, rows: int) -> JoinReport:
+        return JoinReport(ok=ok, tasks_rows=len(tasks), joined_rows=rows, has_employees=employees is not None,
+                          has_projects=projects is not None, issues=issues)
+
+    for name, dim, key in (("직원", employees, "employee_id"), ("프로젝트", projects, "project_id")):
+        if dim is None:
+            continue
+        valid = dim.loc[~dim["_invalid"].astype(bool) & dim[key].notna()]
+        dup = valid[key].duplicated(keep=False)
+        if dup.any():
+            ids = ", ".join(sorted(valid.loc[dup, key].unique())[:10])
+            issues.append(Issue(level="error", code="duplicate_key",
+                                message=f"{name} 표의 {key}가 중복됩니다({ids}). 결합하면 업무 행이 늘어나므로 결합하지 않습니다.",
+                                count=int(dup.sum())))
+            return None, report(False, len(tasks))
+
+    if employees is not None:
+        emp = employees.loc[~employees["_invalid"].astype(bool), ["employee_id", "department", "role", "hourly_labor_cost"]]
+        view = view.merge(emp, how="left", left_on="assignee_id", right_on="employee_id", validate="many_to_one")
+        view = view.drop(columns="employee_id")
+        orphan = view["assignee_id"].notna() & view["department"].isna()
+        if orphan.any():
+            issues.append(_issue("warning", "orphan_assignee", "직원 표에 없는 담당자ID가 있습니다. 부서는 '미확인'으로 둡니다.",
+                                 orphan, view))
+        view.loc[view["assignee_id"].isna(), "department"] = UNASSIGNED
+        view.loc[orphan, "department"] = "미확인"
+        labor = view["actual_mh"] * view["hourly_labor_cost"]
+        no_rate = (view["actual_mh"] == 0).fillna(False).astype(bool)
+        view["labor_cost"] = labor.mask(no_rate & labor.isna(), 0)
+        unknown = view["labor_cost"].isna() & view["actual_mh"].notna()
+        if unknown.any():
+            issues.append(_issue("warning", "labor_cost_unknown", "실적MH가 있지만 담당자 단가를 알 수 없어 인건비를 계산할 수 없는 업무가 있습니다.",
+                                 unknown, view))
+        view["total_cost"] = view["labor_cost"] + view["actual_nonlabor_cost"]
+
+    if projects is not None:
+        prj = projects.loc[~projects["_invalid"].astype(bool),
+                           ["project_id", "project_name", "lead_department", "project_type", "status"]]
+        view = view.merge(prj.rename(columns={"status": "project_status"}), how="left", on="project_id",
+                          validate="many_to_one")
+        orphan = view["project_id"].notna() & view["project_status"].isna()
+        if orphan.any():
+            issues.append(_issue("warning", "orphan_project", "프로젝트 표에 없는 프로젝트ID가 있습니다.", orphan, view))
+        issues.append(Issue(level="info", code="budget_not_joined",
+                            message="예산은 업무 행에 붙이지 않고 프로젝트 표에서 프로젝트당 한 번만 씁니다 (중복 합산 방지)."))
+
+    if len(view) != len(tasks):
+        issues.append(Issue(level="error", code="row_count_changed",
+                            message=f"결합 후 행 수가 바뀌었습니다 ({len(tasks)} → {len(view)}). 결합 결과를 쓰지 않습니다."))
+        return None, report(False, len(view))
+
+    view["mh_over"] = (view["actual_mh"] - view["planned_mh"]).clip(lower=0)
+    view["start_month"] = view["start_date"].dt.strftime("%Y-%m")
+    view["completed_month"] = view["completed_at"].dt.strftime("%Y-%m")
+    return Dataset(kind="standard", main=view, employees=employees, projects=projects), report(True, len(view))
