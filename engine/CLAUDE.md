@@ -19,8 +19,16 @@ if res.ok:
     else:
         result.error                 # 숫자 대신 이 사유를 보여준다
 
-tool_schemas()                       # LLM function calling용 도구 이름·설명·입력 스키마
+tool_schemas()                       # 표준 JSON Schema ($defs·$ref 포함 가능)
+
+# Gemini function calling: 이걸 쓴다 ($ref를 펼치고 Optional을 nullable로 바꾼 형식)
+from google.genai import types
+from engine import gemini_tool_declarations
+tool = types.Tool(function_declarations=gemini_tool_declarations())
+config = types.GenerateContentConfig(tools=[tool])
+# 모델이 고른 function_call의 name·args를 그대로 run_tool(ds, name, dict(args))에 넘긴다 (검증은 엔진이 함)
 ```
+`aggregate` 필터의 `in` 값은 목록(`["P01", "P05"]`)과 쉼표 문자열(`"P01,P05"`)을 모두 받습니다. 숫자·날짜 비교 값도 문자열로 보내면 엔진이 컬럼 형식에 맞춰 바꿉니다.
 업무명·프로젝트명은 결과 rows에 없습니다. 화면에 이름이 필요하면 `ds.main`/`ds.projects`에서 ID로 찾습니다 (LLM에는 보내지 않음).
 
 ## 지킬 것
