@@ -162,6 +162,10 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
             mask = s.isna() if f.op == "is_null" else s.notna()
         else:
             value: Any = f.value
+            if f.op == "in" and isinstance(value, str):  # Gemini는 "P01,P05"처럼 문자열로 보낸다
+                value = [v.strip() for v in value.split(",") if v.strip()]
+            elif f.op == "in" and not isinstance(value, list):
+                value = [value]
             try:
                 conv = pd.Timestamp if pd.api.types.is_datetime64_any_dtype(s) else (
                     float if pd.api.types.is_numeric_dtype(s) else str)
@@ -169,7 +173,7 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
             except (TypeError, ValueError):
                 return _err(tool, p, f"필터 값 '{f.value}'의 형식이 '{f.column}' 컬럼과 맞지 않습니다.")
             if f.op == "in":
-                mask = s.isin(value if isinstance(value, list) else [value])
+                mask = s.isin(value)
             else:
                 mask = {"==": s == value, "!=": s != value, ">": s > value, ">=": s >= value,
                         "<": s < value, "<=": s <= value}[f.op]

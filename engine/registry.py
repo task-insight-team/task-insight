@@ -76,6 +76,53 @@ def run_tool(data: Union[Dataset, pd.DataFrame], name: str, params: dict) -> Too
 
 
 def tool_schemas() -> list[dict]:
-    """LLM function calling용 도구 설명 (이름·설명·입력 JSON 스키마)."""
+    """LLM function calling용 도구 설명 (이름·설명·입력 JSON 스키마). 표준 JSON Schema라 $defs·$ref가 있을 수 있다."""
     return [{"name": n, "description": s.description, "parameters": s.params.model_json_schema()}
             for n, s in TOOLS.items()]
+
+
+# 타입이 없는(Any) 필드에 붙일 설명. Gemini Schema는 타입 없는 필드를 받지 않는다.
+_UNTYPED_HINT = "비교할 값. 숫자·날짜(YYYY-MM-DD)도 문자열로 쓴다. op가 in이면 쉼표로 구분 (예: \"P01,P05\")"
+
+
+def _flatten(node: object, defs: dict) -> object:
+    """$ref를 펼치고, Optional(anyOf [X, null])은 X + nullable로, 타입 없는 필드는 문자열로 바꾼다."""
+    if isinstance(node, list):
+        return [_flatten(x, defs) for x in node]
+    if not isinstance(node, dict):
+        return node
+    if "$ref" in node:
+        target = dict(defs[node["$ref"].split("/")[-1]])
+        extra = {k: v for k, v in node.items() if k != "$ref"}
+        return _flatten({**target, **extra}, defs)
+    if "anyOf" in node:
+        branches = [b for b in node["anyOf"] if b.get("type") != "null"]
+        rest = {k: v for k, v in node.items() if k != "anyOf"}
+        if len(branches) == 1:
+            merged = _flatten({**branches[0], **rest}, defs)
+            if len(branches) < len(node["anyOf"]):
+                merged["nullable"] = True
+            return merged
+        return {**_flatten(rest, defs), "anyOf": _flatten(branches, defs)}
+    out = {k: _flatten(v, defs) for k, v in node.items() if k != "$defs"}
+    if "properties" in node:
+        out["properties"] = {k: _flatten(v, defs) for k, v in node["properties"].items()}
+    if not any(k in out for k in ("type", "anyOf", "properties", "items", "enum")):
+        out["type"] = "string"
+        out["nullable"] = True
+        out.setdefault("description", _UNTYPED_HINT)
+    return out
+
+
+def gemini_tool_declarations() -> list[dict]:
+    """Gemini function calling용 도구 선언 (name·description·parameters).
+
+    google-genai의 types.FunctionDeclaration(**d)나 types.Tool(function_declarations=[...])에 그대로 넣을 수 있다.
+    $defs·$ref를 펼치고 Optional을 nullable로 바꿔 Gemini Schema 형식에 맞춘다. 검증은 그대로 run_tool이 한다.
+    """
+    out = []
+    for name, spec in TOOLS.items():
+        schema = spec.params.model_json_schema()
+        out.append({"name": name, "description": spec.description,
+                    "parameters": _flatten(schema, schema.get("$defs", {}))})
+    return out
