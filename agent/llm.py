@@ -13,8 +13,14 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol, Union
 
-DEFAULT_MODEL = "gemini-flash-latest"
-DEFAULT_TIMEOUT_S = 30
+import time
+
+# 2026-11-22 확인: gemini-2.5-flash는 신규 키에서 404, gemini-3.8-flash/3.5-flash는 503·504(과부하·지연)가 잦음.
+# flash-lite는 함수 호출 응답이 2초 안팎이고 도구 선택이 정확해 기본값으로 둔다. GEMINI_MODEL로 바꿀 수 있다.
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_TIMEOUT_S = 45
+RETRY_KINDS = ("server", "timeout")  # 503·504 등 일시 오류는 1번만 다시 시도
+RETRY_WAIT_S = 1.5
 
 
 @dataclass
@@ -96,10 +102,17 @@ class GeminiClient:
             tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="ANY")),
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
-        try:
-            resp = self._client.models.generate_content(model=self.model, contents=user, config=config)
-        except Exception as exc:  # noqa: BLE001
-            raise classify_error(exc) from None
+        resp = None
+        for attempt in range(2):
+            try:
+                resp = self._client.models.generate_content(model=self.model, contents=user, config=config)
+                break
+            except Exception as exc:  # noqa: BLE001
+                err = classify_error(exc)
+                if attempt == 0 and err.kind in RETRY_KINDS:
+                    time.sleep(RETRY_WAIT_S)
+                    continue
+                raise err from None
         try:
             calls = [{"name": fc.name, "args": _plain(fc.args or {})} for fc in (resp.function_calls or [])]
         except Exception as exc:  # noqa: BLE001

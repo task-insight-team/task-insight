@@ -313,3 +313,47 @@ def test_agent_code_never_reads_answers():
         for banned in ("fixtures", "evaluation_answers", "SCENARIOS", "answer_key"):
             assert banned not in src, f"{path.name}에 {banned}"
         assert "date.today" not in src and "datetime.now" not in src and "Timestamp.now" not in src, path.name
+
+
+def test_small_top_n_is_widened_to_show_ties(ds):
+    resp = plan_for(ds, "aggregate", {"op": "count", "group_by": ["담당자ID"], "sort": "value_desc", "top_n": 1})
+    assert resp.plan.steps[0].params["top_n"] == 5
+
+
+@pytest.mark.parametrize("question,word", [("인사부 미완료 업무는?", "인사"), ("생산팀 업무 현황 알려줘", "생산"),
+                                           ("P77 프로젝트 비용은?", "P77"), ("E999 직원 업무 수는?", "E999")])
+def test_unknown_target_in_question_is_asked_back_before_llm(ds, question, word):
+    llm = FakeLLM()  # 호출되면 실패
+    resp = create_plan(question, ds, AS_OF, llm)
+    assert resp.status == "clarify" and word in resp.message and not llm.prompts
+
+
+@pytest.mark.parametrize("question", ["품질팀 미완료 업무는?", "경영지원부 업무 현황", "P03 프로젝트 비용은?",
+                                      "E032 직원 업무는?", "전부 보여줘", "일부 프로젝트의 대부분 업무", "내부 업무 현황"])
+def test_known_targets_and_common_words_pass(ds, question):
+    resp = create_plan(question, ds, AS_OF, FakeLLM(FakeLLM.calls(("check_missing_data", {}))))
+    assert resp.status == "plan", resp.message
+
+
+def test_department_not_applied_is_disclosed(ds):
+    resp = create_plan("연구팀 직원별 완료율은?", ds, AS_OF,
+                       FakeLLM(FakeLLM.calls(("calculate_completion_rate", {"group_by": "담당자ID"}))))
+    assert resp.status == "plan" and any("연구" in n and "좁히지 않은" in n for n in resp.notices)
+
+
+def test_department_filter_applied_has_no_warning(ds):
+    args = {"op": "count", "filters": [{"column": "부서", "op": "==", "value": "제조"}, {"column": "상태", "op": "!=", "value": "완료"}]}
+    resp = create_plan("제조 부서 미완료 업무 몇 건?", ds, AS_OF, FakeLLM(FakeLLM.calls(("aggregate", args))))
+    assert resp.status == "plan" and not resp.notices
+    out = execute_plan(ds, resp.plan, approve_plan(resp.plan))
+    assert "부서 == 제조" in out.explanation and f"{num_of(out)}건" in out.explanation
+
+
+def num_of(out):
+    return int(out.steps[0].result.value)
+
+
+def test_department_grouping_points_to_row(ds):
+    resp = create_plan("품질팀 마감 넘긴 일 몇 개야?", ds, AS_OF,
+                       FakeLLM(FakeLLM.calls(("count_overdue_tasks", {"group_by": "부서"}))))
+    assert any("'품질' 행" in n for n in resp.notices)

@@ -13,7 +13,7 @@ from engine import gemini_tool_declarations
 from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
-from agent.guard import MAX_STEPS, Rejected, validate_call
+from agent.guard import MAX_STEPS, Rejected, check_question_targets, unscoped_department_notices, validate_call
 from agent.llm import GeminiClient, LLMClient, LLMError
 from agent.prompts import AGENT_TOOLS, CLARIFY_TOOL, LIMIT_TOOL, SYSTEM_PROMPT, user_prompt
 from agent.schemas import PlanResponse
@@ -86,6 +86,10 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
         return _fail(question, as_of, "분석할 데이터를 먼저 불러와 주세요.")
 
     vocab = build_vocabulary(ds, as_of)
+    missing_targets = check_question_targets(question, vocab)
+    if missing_targets:  # 없는 대상은 LLM에 묻기 전에 바로 되묻는다 (비슷한 값으로 바꿔 답하지 않음)
+        return PlanResponse(status="clarify", question=question, as_of=as_of, rejected=missing_targets,
+                            message="질문에 나온 대상을 데이터에서 찾을 수 없습니다. " + " ".join(missing_targets))
     try:
         llm = llm or GeminiClient()
         reply = llm.generate(SYSTEM_PROMPT, user_prompt(render_context(ds, vocab), question),
@@ -127,6 +131,7 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
 
     if steps:
         notices += [f"계획에서 제외한 분석: {r}" for r in rejected]
+        notices += [n for n in unscoped_department_notices(question, steps, vocab) if n not in notices]
         summary =f"다음 {len(steps)}단계 분석을 실행합니다: " + " / ".join(s.purpose for s in steps)
         summary += "".join(f"\n※ {n}" for n in notices)
         plan = AnalysisPlan(question=question, steps=steps, summary=summary)

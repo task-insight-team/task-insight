@@ -45,7 +45,7 @@ def _leaders(rows: list[dict], key: str) -> tuple[list[str], Any]:
 
 
 def _names(names: list[str]) -> str:
-    return ", ".join(names) + (f" (공동 {len(names)}곳)" if len(names) > 1 else "")
+    return ", ".join(names) + (" (공동 1위)" if len(names) > 1 else "")
 
 
 def _listing(rows: list[dict], key: str, unit: str = "") -> str:
@@ -158,7 +158,10 @@ def _aggregate(res: ToolResult) -> str:
     label = keys[-1]
     unit = "건" if res.params.get("op") == "count" else ""
     if not res.params.get("group_by"):
-        return f"{label}: {num(res.rows[0][label])}{unit}"
+        cond = " / ".join(f"{f['column']} {f['op']} {f.get('value') if f.get('value') is not None else ''}".strip()
+                          for f in res.params.get("filters") or [])
+        what = "업무 수" if res.params.get("op") == "count" else label
+        return f"{'조건(' + cond + ')에 맞는 ' if cond else ''}{what}는 {num(res.rows[0][label])}{unit}입니다."
     cat = " · ".join(keys[:-1])
     sort = res.params.get("sort")
     if sort in ("value_desc", "value_asc"):

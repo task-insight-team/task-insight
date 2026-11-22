@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Optional
 
 from pydantic import ValidationError
@@ -22,6 +23,7 @@ from engine import TOOLS
 from agent.context import Vocabulary, show
 
 MAX_STEPS = 4
+MIN_TOP_N = 5
 AS_OF_TOOLS = ("count_overdue_tasks", "summarize_by_category")  # as_of를 받는 도구 (항상 외부 기준일로 채움)
 # 도구별 컬럼 이름을 받는 필드 (aggregate.group_by는 목록)
 COLUMN_FIELDS: dict[str, list[str]] = {
@@ -94,6 +96,9 @@ def validate_call(name: str, args: Any, vocab: Vocabulary) -> tuple[dict, list[s
         fields = ", ".join(".".join(str(x) for x in e["loc"]) or "(전체)" for e in exc.errors())
         raise Rejected(f"{name}: 도구 입력 형식이 잘못되었습니다 ({fields}).") from None
     params = parsed.model_dump(mode="json")
+    # 순위 질문에서 top_n이 너무 작으면 1위 동점이 잘린다 → 최소 MIN_TOP_N행은 남긴다
+    if name == "aggregate" and params.get("top_n") and params["top_n"] < MIN_TOP_N and params.get("sort") != "group":
+        params["top_n"] = MIN_TOP_N
 
     table = params.get("table", "main")
     if not vocab.table_of(table):
@@ -109,6 +114,53 @@ def validate_call(name: str, args: Any, vocab: Vocabulary) -> tuple[dict, list[s
     if name == "cost_vs_budget" and params.get("project_id"):
         _check_values(vocab, "project_id", "==", params["project_id"])
     return params, notes
+
+
+# 질문에 직접 적힌 대상(부서·프로젝트ID·직원ID)이 데이터에 있는지 LLM 호출 전에 확인한다.
+# (라우팅용 키워드 매칭이 아니라 '없는 대상을 지어내지 않게' 막는 검증)
+_DEPT_RE = re.compile(r"([가-힣A-Za-z]{2,})(?:팀|부서|부)(?=[\s은는이가을를의에도만과와,.?!]|$)")
+_PROJECT_RE = re.compile(r"(?<![A-Za-z0-9])[Pp](\d{2,3})(?![0-9])")
+_EMP_RE = re.compile(r"(?<![A-Za-z0-9])[Ee](\d{3,4})(?![0-9])")
+
+
+def check_question_targets(question: str, vocab: Vocabulary) -> list[str]:
+    if vocab.kind != "standard":
+        return []
+    problems = []
+    depts = [d for d in vocab.values.get("department", []) if d != "미배정"]
+    for stem in dict.fromkeys(_DEPT_RE.findall(question)):
+        if depts and not any(stem in d or d in stem for d in depts):
+            problems.append(f"부서 '{stem}'은(는) 데이터에 없습니다. 있는 부서: {', '.join(depts)}")
+    for label, rx, col in (("프로젝트", _PROJECT_RE, "project_id"), ("직원", _EMP_RE, "employee_id")):
+        known = vocab.values.get(col, [])
+        prefix = "P" if col == "project_id" else "E"
+        for digits in dict.fromkeys(rx.findall(question)):
+            cand = [k for k in known if k[1:].lstrip("0") == digits.lstrip("0")]
+            if known and not cand:
+                problems.append(f"{label} '{prefix}{digits}'은(는) 데이터에 없습니다 ({known[0]}~{known[-1]}).")
+    return problems
+
+
+def unscoped_department_notices(question: str, steps: list, vocab: Vocabulary) -> list[str]:
+    """질문에 나온 부서로 좁혀지지 않은 단계가 있으면 사용자에게 알린다 (일부 도구는 부서 필터가 없음)."""
+    if vocab.kind != "standard":
+        return []
+    depts = [d for d in vocab.values.get("department", []) if d != "미배정"]
+    named = [d for d in depts if any(stem in d or d in stem for stem in _DEPT_RE.findall(question)) or d in question]
+    notes = []
+    for dept in named:
+        for s in steps:
+            filtered = any(vocab.resolve(s.params.get("table", "main"), f.get("column")) == "department"
+                           and dept in str(f.get("value")) for f in s.params.get("filters") or [])
+            groups = s.params.get("group_by")
+            groups = groups if isinstance(groups, list) else [groups]
+            if filtered:
+                continue
+            if any(vocab.resolve("main", g) == "department" for g in groups if g):
+                notes.append(f"질문한 '{dept}' 부서의 값은 결과 표의 '{dept}' 행을 확인하세요.")
+            else:
+                notes.append(f"'{s.purpose}'은(는) '{dept}' 부서로 좁히지 않은 전체 결과입니다 (이 분석 도구는 부서 조건을 지원하지 않습니다).")
+    return list(dict.fromkeys(notes))
 
 
 def plan_fingerprint(plan: AnalysisPlan) -> str:

@@ -33,7 +33,7 @@ else:
 | 환경변수 | 설명 |
 |---|---|
 | `GEMINI_API_KEY` | 필수. 환경변수 또는 Streamlit `st.secrets` |
-| `GEMINI_MODEL` | 선택. 기본 `gemini-flash-latest` |
+| `GEMINI_MODEL` | 선택. 기본 `gemini-3.5-flash-lite` (2026-11-22 확인: 2.5-flash는 신규 키 404, 3.8·3.5-flash는 503·504 잦음) |
 
 ## 터미널 확인
 

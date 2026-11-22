@@ -84,3 +84,45 @@ def test_timeout_classified():
     class ReadTimeout(Exception):
         pass
     assert classify_error(ReadTimeout()).kind == "timeout"
+
+
+class FlakyModels:
+    """처음 n번은 예외, 그다음은 정상 응답."""
+
+    def __init__(self, failures):
+        self.failures = list(failures)
+        self.calls = 0
+
+    def generate_content(self, **kwargs):
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return SimpleNamespace(function_calls=[SimpleNamespace(name="check_missing_data", args={})], text=None)
+
+
+def _flaky_client(monkeypatch, failures):
+    models = FlakyModels(failures)
+    monkeypatch.setattr("google.genai.Client", lambda **kw: SimpleNamespace(models=models))
+    monkeypatch.setattr("agent.llm.RETRY_WAIT_S", 0)
+    return GeminiClient(api_key="test-key"), models
+
+
+def test_retries_once_on_503(monkeypatch):
+    client, models = _flaky_client(monkeypatch, [errors.ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE"}})])
+    assert client.generate("s", "u", []).calls[0]["name"] == "check_missing_data"
+    assert models.calls == 2
+
+
+def test_gives_up_after_second_server_error(monkeypatch):
+    e = lambda: errors.ServerError(504, {"error": {"code": 504, "status": "DEADLINE_EXCEEDED"}})  # noqa: E731
+    client, models = _flaky_client(monkeypatch, [e(), e()])
+    with pytest.raises(LLMError) as err:
+        client.generate("s", "u", [])
+    assert err.value.kind == "server" and models.calls == 2
+
+
+def test_no_retry_on_quota(monkeypatch):
+    client, models = _flaky_client(monkeypatch, [errors.ClientError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}})])
+    with pytest.raises(LLMError):
+        client.generate("s", "u", [])
+    assert models.calls == 1
