@@ -13,7 +13,8 @@ from engine import gemini_tool_declarations
 from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
-from agent.guard import MAX_STEPS, Rejected, check_question_targets, unscoped_department_notices, validate_call
+from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, missing_conditions,
+                         suggest_filters, validate_call)
 from agent.llm import GeminiClient, LLMClient, LLMError
 from agent.prompts import AGENT_TOOLS, CLARIFY_TOOL, LIMIT_TOOL, SYSTEM_PROMPT, user_prompt
 from agent.schemas import PlanResponse
@@ -90,33 +91,85 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
     if missing_targets:  # 없는 대상은 LLM에 묻기 전에 바로 되묻는다 (비슷한 값으로 바꿔 답하지 않음)
         return PlanResponse(status="clarify", question=question, as_of=as_of, rejected=missing_targets,
                             message="질문에 나온 대상을 데이터에서 찾을 수 없습니다. " + " ".join(missing_targets))
+    conditions = extract_conditions(question, vocab)
+    base_prompt = user_prompt(render_context(ds, vocab), question)
     try:
         llm = llm or GeminiClient()
-        reply = llm.generate(SYSTEM_PROMPT, user_prompt(render_context(ds, vocab), question),
-                             gemini_tool_declarations() + AGENT_TOOLS)
+        reply = llm.generate(SYSTEM_PROMPT, base_prompt, gemini_tool_declarations() + AGENT_TOOLS)
     except LLMError as exc:
         return _fail(question, as_of, exc.user_message, getattr(llm, "model", "") if llm else "")
     except Exception:  # noqa: BLE001 - 어떤 경우에도 가짜 답 대신 실패를 알린다
         return _fail(question, as_of, LLMError.MESSAGES["unknown"], getattr(llm, "model", "") if llm else "")
     model = getattr(llm, "model", "")
 
+    built = _build(reply, vocab, conditions)
+    if built["uncovered"]:
+        # 질문 조건이 빠진 단계가 있으면 이유를 알려 주고 1번만 다시 계획하게 한다
+        labels = ", ".join(c.label for c in built["uncovered"])
+        feedback = (f"{base_prompt}\n\n[이전 계획 검토 결과] 질문의 조건({labels})이 분석 인자에 반영되지 않았다. "
+                    "모든 조건을 aggregate의 filters(또는 cost_vs_budget의 project_id 등)로 반드시 반영하라. "
+                    f"aggregate를 쓴다면 filters 예: {json.dumps(suggest_filters(conditions, as_of), ensure_ascii=False)}. "
+                    "count_overdue_tasks·calculate_completion_rate·mh_overrun·summarize_by_category는 부서·프로젝트 조건을 받지 못한다. "
+                    "조건을 반영할 수 있는 도구가 없으면 전체 결과를 내지 말고 note_limitation으로 이유를 밝혀라.")
+        try:
+            retry = _build(llm.generate(SYSTEM_PROMPT, feedback, gemini_tool_declarations() + AGENT_TOOLS), vocab, conditions)
+            if retry["steps"] or not built["steps"]:
+                built = retry
+        except Exception:  # noqa: BLE001 - 재시도 실패 시 첫 결과(조건 누락 단계는 이미 제외됨)를 쓴다
+            pass
+
+    steps, rejected, notices, clarify = built["steps"], built["rejected"], built["notices"], built["clarify"]
+    if steps:
+        notices = notices + [f"계획에서 제외한 분석: {r}" for r in rejected]
+        summary = f"다음 {len(steps)}단계 분석을 실행합니다: " + " / ".join(s.purpose for s in steps)
+        summary += "".join(f"\n※ {n}" for n in notices)
+        plan = AnalysisPlan(question=question, steps=steps, summary=summary)
+        return PlanResponse(status="plan", question=question, as_of=as_of, plan=plan, notices=notices,
+                            rejected=rejected, model=model, message="아래 분석 계획을 확인하고 승인해 주세요.")
+    if built["uncovered"]:
+        labels = ", ".join(c.label for c in built["uncovered"])
+        return PlanResponse(status="unsupported", question=question, as_of=as_of, notices=notices, rejected=rejected,
+                            model=model, message=(f"질문의 조건({labels})을 반영해 계산할 수 있는 분석을 만들지 못했습니다. "
+                                                  "조건을 뺀 전체 결과는 임의로 보여 드리지 않습니다. "
+                                                  "조건별 개수(업무 수)는 계산할 수 있으니 질문을 바꿔 보시거나, "
+                                                  "이 조건이 필요한 분석은 데이터 엔진 개선 후 지원됩니다."))
+    if clarify and not rejected:
+        q = _safe_text((clarify[0].get("args") or {}).get("question"), "어떤 대상(부서·프로젝트·직원)과 기준으로 분석할지 조금 더 구체적으로 알려 주세요.")
+        return PlanResponse(status="clarify", question=question, as_of=as_of, message=q, notices=notices, model=model)
+    if rejected:
+        return PlanResponse(status="clarify", question=question, as_of=as_of, notices=notices, rejected=rejected,
+                            model=model, message="요청한 분석을 데이터에 맞게 만들 수 없습니다. " + " ".join(rejected))
+    if notices:
+        return PlanResponse(status="unsupported", question=question, as_of=as_of, notices=notices, model=model,
+                            message=" ".join(notices) + f"\n{SUPPORTED_HINT}")
+    return _fail(question, as_of, "AI가 분석 계획을 만들지 못했습니다. 질문을 바꿔 다시 시도해 주세요. " + SUPPORTED_HINT, model)
+
+
+def _build(reply, vocab, conditions) -> dict:
+    """LLM 응답 → 검증된 단계. 질문 조건이 빠진 단계는 제외하고 uncovered에 기록한다."""
     calls = [c for c in reply.calls if isinstance(c, dict) and isinstance(c.get("name"), str)]
     clarify = [c for c in calls if c["name"] == CLARIFY_TOOL]
     limits = [c for c in calls if c["name"] == LIMIT_TOOL]
     tool_calls = [c for c in calls if c["name"] not in (CLARIFY_TOOL, LIMIT_TOOL)]
 
-    notices = []
+    notices: list[str] = []
     for c in limits:
         msg = _safe_text((c.get("args") or {}).get("reason"), "이 질문의 일부는 현재 데이터로 판단하거나 예측할 수 없습니다.")
         if msg not in notices:
             notices.append(msg)
 
-    steps, rejected, seen = [], [], set()
+    steps, rejected, seen, uncovered = [], [], set(), []
     for c in tool_calls:
         try:
             params, notes = validate_call(c["name"], c.get("args") or {}, vocab)
         except Rejected as exc:
             rejected.append(str(exc))
+            continue
+        lacking = missing_conditions(c["name"], params, conditions, vocab)
+        if lacking:
+            uncovered += [x for x in lacking if x not in uncovered]
+            rejected.append(f"{_purpose(c['name'], params)}: 질문 조건({', '.join(x.label for x in lacking)})이 "
+                            "반영되지 않아 제외했습니다.")
             continue
         key = (c["name"], json.dumps(params, sort_keys=True, ensure_ascii=False))
         if key in seen:
@@ -128,22 +181,4 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
         notices += [n for n in notes if n not in notices]
         steps.append(PlanStep(id=f"s{len(steps) + 1}", tool=c["name"], params=params,
                               purpose=_purpose(c["name"], params), chart_type=_chart(c["name"], params)))
-
-    if steps:
-        notices += [f"계획에서 제외한 분석: {r}" for r in rejected]
-        notices += [n for n in unscoped_department_notices(question, steps, vocab) if n not in notices]
-        summary =f"다음 {len(steps)}단계 분석을 실행합니다: " + " / ".join(s.purpose for s in steps)
-        summary += "".join(f"\n※ {n}" for n in notices)
-        plan = AnalysisPlan(question=question, steps=steps, summary=summary)
-        return PlanResponse(status="plan", question=question, as_of=as_of, plan=plan, notices=notices,
-                            rejected=rejected, model=model, message="아래 분석 계획을 확인하고 승인해 주세요.")
-    if clarify and not rejected:
-        q = _safe_text((clarify[0].get("args") or {}).get("question"), "어떤 대상(부서·프로젝트·직원)과 기준으로 분석할지 조금 더 구체적으로 알려 주세요.")
-        return PlanResponse(status="clarify", question=question, as_of=as_of, message=q, notices=notices, model=model)
-    if rejected:
-        return PlanResponse(status="clarify", question=question, as_of=as_of, notices=notices, rejected=rejected,
-                            model=model, message="요청한 분석을 데이터에 맞게 만들 수 없습니다. " + " ".join(rejected))
-    if notices:
-        return PlanResponse(status="unsupported", question=question, as_of=as_of, notices=notices, model=model,
-                            message=" ".join(notices) + f"\n{SUPPORTED_HINT}")
-    return _fail(question, as_of, "AI가 분석 계획을 만들지 못했습니다. 질문을 바꿔 다시 시도해 주세요. " + SUPPORTED_HINT, model)
+    return {"steps": steps, "rejected": rejected, "notices": notices, "clarify": clarify, "uncovered": uncovered}

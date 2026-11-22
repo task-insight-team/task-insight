@@ -48,6 +48,8 @@ SYSTEM_PROMPT = """너는 업무·프로젝트 데이터 분석 도구의 '분�
 용어
 - '미완료' = 상태가 완료가 아닌 모든 업무(미착수·진행중·보류). '기한 초과'(기한이 지난 미완료)와 다르다.
 - 특정 부서·프로젝트·직원으로 좁혀 묻는 질문은 그 대상만 계산되도록 aggregate의 filters를 쓴다.
+  count_overdue_tasks·calculate_completion_rate·mh_overrun·summarize_by_category에는 부서·프로젝트 조건을 넣을 수 없다.
+  조건을 반영할 수 없는 지표(예: 특정 부서의 완료율)는 다른 지표로 바꾸지 말고 note_limitation으로 밝힌다.
   예) 품질 부서의 미완료 업무 수 → aggregate(op=count, filters=[부서 == 품질, 상태 != 완료])
   예) 품질 부서의 기한 초과 업무 수 → aggregate(op=count, filters=[부서 == 품질, 상태 != 완료, 기한 < 기준일])
   예) 특정 프로젝트의 예산 대비 비용 → cost_vs_budget(project_id)

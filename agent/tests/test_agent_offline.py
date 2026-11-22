@@ -332,13 +332,7 @@ def test_unknown_target_in_question_is_asked_back_before_llm(ds, question, word)
                                       "E032 직원 업무는?", "전부 보여줘", "일부 프로젝트의 대부분 업무", "내부 업무 현황"])
 def test_known_targets_and_common_words_pass(ds, question):
     resp = create_plan(question, ds, AS_OF, FakeLLM(FakeLLM.calls(("check_missing_data", {}))))
-    assert resp.status == "plan", resp.message
-
-
-def test_department_not_applied_is_disclosed(ds):
-    resp = create_plan("연구팀 직원별 완료율은?", ds, AS_OF,
-                       FakeLLM(FakeLLM.calls(("calculate_completion_rate", {"group_by": "담당자ID"}))))
-    assert resp.status == "plan" and any("연구" in n and "좁히지 않은" in n for n in resp.notices)
+    assert "데이터에서 찾을 수 없습니다" not in resp.message
 
 
 def test_department_filter_applied_has_no_warning(ds):
@@ -351,9 +345,3 @@ def test_department_filter_applied_has_no_warning(ds):
 
 def num_of(out):
     return int(out.steps[0].result.value)
-
-
-def test_department_grouping_points_to_row(ds):
-    resp = create_plan("품질팀 마감 넘긴 일 몇 개야?", ds, AS_OF,
-                       FakeLLM(FakeLLM.calls(("count_overdue_tasks", {"group_by": "부서"}))))
-    assert any("'품질' 행" in n for n in resp.notices)

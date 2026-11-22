@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from pydantic import ValidationError
@@ -141,26 +142,124 @@ def check_question_targets(question: str, vocab: Vocabulary) -> list[str]:
     return problems
 
 
-def unscoped_department_notices(question: str, steps: list, vocab: Vocabulary) -> list[str]:
-    """질문에 나온 부서로 좁혀지지 않은 단계가 있으면 사용자에게 알린다 (일부 도구는 부서 필터가 없음)."""
+# ---------------------------------------------------------------------------
+# 질문 조건 ↔ 계획 대조: 질문에 명시된 조건이 계산 인자에 실제로 반영됐는지 확인한다.
+# 반영되지 않은 단계는 승인 대상 계획에서 뺀다 (전체 결과를 대신 보여 주지 않음).
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Condition:
+    kind: str  # department | project | employee | status | overdue | month
+    value: str
+    label: str  # 사용자 안내용
+
+
+_STATUS_WORDS = {"진행중": "진행중", "진행 중": "진행중", "미착수": "미착수", "보류": "보류"}
+_OVERDUE_RE = re.compile(r"(기한|마감|납기|데드라인).{0,8}(지난|지나|넘|초과|경과)|기한\s*초과|지연된|지연 업무|밀린|연체")
+# 질문이 요구한 지표 → 그 지표를 계산하는 도구 (aggregate의 개수·합계로는 대신할 수 없음)
+_METRICS = [
+    (re.compile(r"완료율|완수율|완료 비율"), "calculate_completion_rate,summarize_by_category", "지표 = 완료율"),
+    (re.compile(r"비용\s*초과|예산"), "cost_vs_budget", "지표 = 예산 대비 비용"),
+    (re.compile(r"MH\s*초과|초과\s*MH|투입\s*시간.{0,6}초과|공수.{0,6}초과", re.I), "mh_overrun", "지표 = MH 초과"),
+]
+_YM_RE = re.compile(r"(\d{4})\s*[-./년]\s*(\d{1,2})(?!\d)\s*월?(?!\s*[-./]?\s*\d)")  # 2026-11-19 같은 날짜는 제외
+_M_RE = re.compile(r"(?<![\d-])(\d{1,2})\s*월(?!\s*\d+\s*일)")
+
+
+def extract_conditions(question: str, vocab: Vocabulary) -> list[Condition]:
+    """질문에 명시된 조건 (데이터에 실제로 있는 값만). 표준 데이터에서만 검사한다."""
     if vocab.kind != "standard":
         return []
-    depts = [d for d in vocab.values.get("department", []) if d != "미배정"]
-    named = [d for d in depts if any(stem in d or d in stem for stem in _DEPT_RE.findall(question)) or d in question]
-    notes = []
-    for dept in named:
-        for s in steps:
-            filtered = any(vocab.resolve(s.params.get("table", "main"), f.get("column")) == "department"
-                           and dept in str(f.get("value")) for f in s.params.get("filters") or [])
-            groups = s.params.get("group_by")
-            groups = groups if isinstance(groups, list) else [groups]
-            if filtered:
-                continue
-            if any(vocab.resolve("main", g) == "department" for g in groups if g):
-                notes.append(f"질문한 '{dept}' 부서의 값은 결과 표의 '{dept}' 행을 확인하세요.")
-            else:
-                notes.append(f"'{s.purpose}'은(는) '{dept}' 부서로 좁히지 않은 전체 결과입니다 (이 분석 도구는 부서 조건을 지원하지 않습니다).")
-    return list(dict.fromkeys(notes))
+    out: list[Condition] = []
+    for d in vocab.values.get("department", []):
+        if d != "미배정" and d in question:
+            out.append(Condition("department", d, f"부서 = {d}"))
+    for label, rx, col, kind in (("프로젝트", _PROJECT_RE, "project_id", "project"), ("직원", _EMP_RE, "employee_id", "employee")):
+        for digits in dict.fromkeys(rx.findall(question)):
+            for k in vocab.values.get(col, []):
+                if k[1:].lstrip("0") == digits.lstrip("0"):
+                    out.append(Condition(kind, k, f"{label} = {k}"))
+    for word, status in _STATUS_WORDS.items():
+        if word in question and not any(c.value == status for c in out):
+            out.append(Condition("status", status, f"상태 = {status}"))
+    if _OVERDUE_RE.search(question):
+        out.append(Condition("overdue", "", "기한 초과(기한 < 기준일, 미완료)"))
+    months = [f"{y}-{int(m):02d}" for y, m in _YM_RE.findall(question) if 1 <= int(m) <= 12]
+    if not months:
+        months = [f"{vocab.as_of[:4]}-{int(m):02d}" for m in _M_RE.findall(question) if 1 <= int(m) <= 12]
+    for ym in dict.fromkeys(months):
+        out.append(Condition("month", ym, f"기간 = {ym}"))
+    for rx, tools, label in _METRICS:
+        if rx.search(question):
+            out.append(Condition("metric", tools, label))
+    return out
+
+
+def _filter_values(f: dict) -> list[str]:
+    v = f.get("value")
+    if isinstance(v, list):
+        return [str(x).strip() for x in v]
+    if isinstance(v, str) and f.get("op") == "in":
+        return [x.strip() for x in v.split(",")]
+    return [] if v is None else [str(v).strip()]
+
+
+def _filters(tool: str, params: dict, vocab: Vocabulary) -> list[tuple[Optional[str], str, list[str]]]:
+    table = params.get("table", "main")
+    return [(vocab.resolve(table, f.get("column")), f.get("op"), _filter_values(f)) for f in params.get("filters") or []]
+
+
+def step_covers(tool: str, params: dict, cond: Condition, vocab: Vocabulary) -> bool:
+    flt = _filters(tool, params, vocab)
+
+    def has(cols: tuple, value: str) -> bool:
+        return any(c in cols and op in ("==", "in") and value in vals for c, op, vals in flt)
+
+    if cond.kind == "department":
+        return has(("department", "lead_department"), cond.value)
+    if cond.kind == "project":
+        return has(("project_id",), cond.value) or (tool == "cost_vs_budget" and params.get("project_id") == cond.value)
+    if cond.kind == "employee":
+        return has(("assignee_id", "employee_id"), cond.value)
+    if cond.kind == "status":
+        return has(("status",), cond.value)
+    if cond.kind == "overdue":
+        if tool == "count_overdue_tasks":
+            return True
+        due = any(c == "due_date" and op in ("<", "<=") for c, op, _ in flt)
+        open_ = any(c == "status" and ((op == "!=" and "완료" in vals) or (op in ("==", "in") and vals and "완료" not in vals))
+                    for c, op, vals in flt)
+        return due and open_
+    if cond.kind == "metric":
+        return tool in cond.value.split(",")
+    if cond.kind == "month":
+        if tool == "compare_periods":
+            return cond.value in (params.get("current"), params.get("previous"))
+        date_cols = {c for c, t in vocab.table_of(params.get("table", "main")).items() if t == "날짜"} | {"start_month", "completed_month"}
+        return any(c in date_cols and any(v.startswith(cond.value) for v in vals) for c, op, vals in flt)
+    return True
+
+
+def suggest_filters(conditions: list[Condition], as_of: str) -> list[dict]:
+    """조건을 aggregate filters로 옮긴 예시 (재계획 안내용)."""
+    out: list[dict] = []
+    for c in conditions:
+        if c.kind == "department":
+            out.append({"column": "부서", "op": "==", "value": c.value})
+        elif c.kind == "project":
+            out.append({"column": "프로젝트ID", "op": "==", "value": c.value})
+        elif c.kind == "employee":
+            out.append({"column": "담당자ID", "op": "==", "value": c.value})
+        elif c.kind == "status":
+            out.append({"column": "상태", "op": "==", "value": c.value})
+        elif c.kind == "overdue":
+            out += [{"column": "상태", "op": "!=", "value": "완료"}, {"column": "기한", "op": "<", "value": as_of}]
+        elif c.kind == "month":
+            out.append({"column": "완료월", "op": "==", "value": c.value})
+    return out
+
+
+def missing_conditions(tool: str, params: dict, conditions: list[Condition], vocab: Vocabulary) -> list[Condition]:
+    return [c for c in conditions if not step_covers(tool, params, c, vocab)]
 
 
 def plan_fingerprint(plan: AnalysisPlan) -> str:
