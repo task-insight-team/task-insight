@@ -116,3 +116,13 @@ def test_file_errors_name_the_files():
     from engine import load_dataset
     res = load_dataset({"empty.csv": ERR / "empty.csv", "header_only.csv": ERR / "header_only.csv"})
     assert not res.ok and "empty.csv" in res.errors[0].message and "header_only.csv" in res.errors[0].message
+
+
+def test_duplicate_kind_message_is_korean_with_file_names():
+    from engine import load_dataset
+    res = load_dataset({"tasks.csv": DATA / "kafe" / "tasks.csv", "bad_tasks.csv": ERR / "bad_tasks.csv"})
+    e = res.errors[0]
+    assert not res.ok and e.code == "duplicate_kind"
+    assert e.message.startswith("업무(tasks) 파일이 2개입니다 (tasks.csv, bad_tasks.csv)")
+    res = load_dataset({"sample.csv": DATA / "sample.csv", "invalid_numbers.csv": ERR / "invalid_numbers.csv"})
+    assert res.errors[0].code == "duplicate_kind" and "일반 CSV는 한 번에 하나만" in res.errors[0].message
