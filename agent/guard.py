@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from pydantic import ValidationError
@@ -340,6 +340,102 @@ def missing_concepts(question: str, vocab: Vocabulary) -> list[str]:
             continue
         missing.append(label)
     return missing
+
+
+# 질문에 자주 나오는 업무·매출 용어 → 그 정보를 담은 컬럼 이름에 들어 있을 만한 단어.
+# 질문에 이 용어가 있는데 맞는 컬럼이 없으면 '없는 정보'로 보고 다른 컬럼으로 대신하지 않는다.
+# (모든 의미 관계를 해석하려는 것이 아니라, 검증 가능한 흔한 용어만 확인한다)
+BUSINESS_TERMS = [
+    ("고객", re.compile(r"고객|거래처"), ("customer", "client", "고객", "거래처")),
+    ("상품·제품", re.compile(r"상품|제품|품목"), ("product", "item", "goods", "sku", "상품", "제품", "품목")),
+    ("매출", re.compile(r"매출|판매액|판매 금액"), ("sales", "revenue", "매출", "판매")),
+    ("이익", re.compile(r"이익|마진|수익"), ("profit", "margin", "income", "이익", "마진", "수익")),
+    ("연봉·급여", re.compile(r"연봉|급여|임금|월급|보수"), ("salary", "wage", "pay", "연봉", "급여", "임금")),
+    ("만족도", re.compile(r"만족도|만족"), ("satisfaction", "만족")),
+    ("주문", re.compile(r"주문"), ("order", "주문")),
+    ("수량", re.compile(r"수량|판매량"), ("qty", "quantity", "수량", "판매량")),
+    ("가격", re.compile(r"가격|단가"), ("price", "가격", "단가")),
+    ("지역", re.compile(r"지역|지점|도시"), ("region", "area", "city", "location", "branch", "지역", "지점", "도시")),
+    ("채널", re.compile(r"채널"), ("channel", "채널")),
+]
+# '월별'·'달마다'의 월 → 월·날짜 컬럼
+MONTH_WORDS = ("월", "달", "월간", "매월")
+MONTH_HINTS = ("month", "월", "date", "일자", "날짜")
+GROUP_RE = re.compile(r"([가-힣A-Za-z0-9_]+?)\s*(?:별|마다)(?![가-힣])|([가-힣A-Za-z0-9_]+?)별로")
+
+
+def _matching_cols(vocab: Vocabulary, aliases: tuple) -> list[str]:
+    cols = vocab.columns.get("main", {})
+    return [c for c in cols if any(a.lower() in c.lower() or a.lower() in show(c).lower() for a in aliases)]
+
+
+@dataclass
+class QuestionCols:
+    missing_terms: list = field(default_factory=list)  # 질문 용어인데 맞는 컬럼이 없음 (예: 고객)
+    unknown_groups: list = field(default_factory=list)  # 'X별'의 X를 컬럼에 대응시킬 수 없음
+    group_cols: set = field(default_factory=set)  # 질문이 요구한 집계 기준 컬럼
+    mention_cols: set = field(default_factory=set)  # 질문에 나온 컬럼 (기준·지표 모두)
+    metric_cols: set = field(default_factory=set)  # 질문에 나온 숫자 컬럼 (지표)
+
+
+def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
+    """질문에서 요구한 컬럼(집계 기준·지표)을 실제 스키마와 대조한다."""
+    qc = QuestionCols()
+    cols = vocab.columns.get("main", {})
+    for label, rx, aliases in BUSINESS_TERMS:
+        if rx.search(question):
+            found = _matching_cols(vocab, aliases)
+            if found:
+                qc.mention_cols |= set(found)
+            else:
+                qc.missing_terms.append(label)
+    for c in cols:  # 컬럼 이름 자체가 질문에 나온 경우 (sales, 건수 등)
+        if len(c) >= 2 and (c.lower() in question.lower() or (show(c) != c and show(c) in question)):
+            qc.mention_cols.add(c)
+    if vocab.kind != "standard":  # 표준 데이터는 기존 조건 대조(부서·프로젝트·지표)로 확인
+        for m in GROUP_RE.finditer(question):
+            word = (m.group(1) or m.group(2) or "").strip()
+            if not word or word in ("부서", "팀"):  # 부서는 REQUIRED_CONCEPTS에서 확인
+                continue
+            target = set()
+            if word in MONTH_WORDS or word.endswith("월"):
+                target = set(_matching_cols(vocab, MONTH_HINTS)) | {c for c, t in cols.items() if t == "날짜"}
+            else:
+                for label, rx, aliases in BUSINESS_TERMS:
+                    if rx.search(word):
+                        target = set(_matching_cols(vocab, aliases))
+                        break
+                else:
+                    target = {c for c in cols if word.lower() == c.lower() or word == show(c)
+                              or (len(word) >= 2 and (word.lower() in c.lower() or word in show(c)))}
+            if target:
+                qc.group_cols |= target
+                qc.mention_cols |= target
+            elif not any(word == t for t in qc.missing_terms):
+                qc.unknown_groups.append(word)
+    qc.metric_cols = {c for c in qc.mention_cols if cols.get(c) == "숫자"}
+    return qc
+
+
+def generic_mismatch(tool: str, params: dict, qc: QuestionCols, vocab: Vocabulary) -> list[str]:
+    """일반 CSV: 계획 인자가 질문이 요구하지 않은 컬럼으로 바뀌었으면 사유 목록 (설명 문구가 아니라 실제 인자를 본다)."""
+    if vocab.kind == "standard":
+        return []
+    table = params.get("table", "main")
+    problems = []
+    groups = params.get("group_by")
+    groups = groups if isinstance(groups, list) else ([groups] if groups else [])
+    for g in groups:
+        col = vocab.resolve(table, g)
+        if col and col not in qc.mention_cols:
+            want = ", ".join(show(c) for c in sorted(qc.group_cols)) or "(질문에 집계 기준 없음)"
+            problems.append(f"집계 기준 '{show(col)}'은(는) 질문에서 요구하지 않았습니다 (요청 기준: {want})")
+    value = params.get("value_column")
+    if value and qc.metric_cols:
+        col = vocab.resolve(table, value)
+        if col and col not in qc.metric_cols:
+            problems.append(f"지표 '{show(col)}'은(는) 질문의 지표({', '.join(show(c) for c in sorted(qc.metric_cols))})와 다릅니다")
+    return problems
 
 
 def visible_columns(vocab: Vocabulary) -> list[str]:

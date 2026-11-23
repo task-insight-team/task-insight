@@ -170,7 +170,7 @@ def test_period_change_without_total_rate():
     ds = load_bytes(**{"zero.csv": csv})
     reply = FakeLLM.calls(("compare_periods", {"date_column": "month", "op": "sum", "value_column": "sales",
                                                "current": "2026-02", "group_by": "region"}))
-    resp = create_plan("전월 대비 매출 변화는?", ds, AS_OF, FakeLLM(reply))
+    resp = create_plan("전월 대비 지역별 매출 변화는?", ds, AS_OF, FakeLLM(reply))
     out = execute_plan(ds, resp.plan, approve_plan(resp.plan))
     assert "계산할 수 없습니다" in out.steps[0].explanation or out.steps[0].result.error
 
