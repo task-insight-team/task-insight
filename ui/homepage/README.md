@@ -13,10 +13,18 @@
 - 숫자: `index.html` 안의 `const DATA` 한 곳 (`data/kafe/` 기준으로 계산한 값)
 - 문장: `const TEXT` 한 곳
 
+## 분석 앱 연결 (iframe)
+- `#ask` 섹션에 배포된 Streamlit 앱을 **iframe**으로 끼워 넣었습니다. 질문 입력 → 분석 계획 → [승인하고 실행] → 표·차트·근거는 모두 이 앱 안에서 동작합니다.
+- 배포 앱 주소: https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/
+  - iframe `src`는 `…streamlit.app/?embed=true`, 바로 아래 "화면이 보이지 않으면 새 창에서 열기" 링크는 `?embed=true` 없는 원래 주소(`target="_blank"`)입니다. 주소가 바뀌면 `index.html`의 `#ask` 섹션에서 두 곳을 고치세요.
+- **앱이 잠들어 있으면 처음 열 때 30초~1분 걸립니다.** 발표 전에 한 번 열어 깨워 두세요.
+- 위쪽 질문 목록은 "이런 질문을 해 보세요" 예시입니다. 누르면 질문과 "이 질문을 아래 앱에 입력해 보세요" 안내만 나오고, 답은 만들지 않습니다.
+- 안내 문장은 `const TEXT`(`askLead`, `panelHint`, `tryIt`, `embedFallback`)에서 고칩니다.
+
 ## 정답은 넣지 않았습니다
-- 질문 7개의 답은 `const ANSWERS = { Q1: null, … }`로 비어 있고, 화면에 "아직 연결 전이에요"가 나옵니다.
+- 이 페이지에는 분석 결과 숫자를 직접 쓰지 않습니다 (`ANSWERS`·`askAgent`는 없앴습니다). 화면의 분석 수치는 iframe 안의 앱(엔진 계산 결과)에서만 나옵니다.
 - 빠진 정보 개수와 대결 점수도 `—`로 비워 두었습니다.
-- 에이전트와 연결할 때는 `askAgent(questionId)` 함수 안에서 에이전트 결과(`ToolResult`)를 받아 넣으면 됩니다.
+- API 키 등 비밀값은 이 폴더에 넣지 않습니다. 홈페이지에서 Gemini를 직접 부르지 않습니다.
 
 ## 다른 버전
 - `drafts/v3_apple.html`: 이전 디자인(애플 스타일, 점 150개 스토리) 비교용. 정답은 이 파일도 비어 있습니다.

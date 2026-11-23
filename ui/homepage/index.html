@@ -221,11 +221,17 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 .tool summary{cursor:pointer;list-style:none}
 .tool summary::-webkit-details-marker{display:none}
 .tool p{margin-top:10px;color:var(--muted)}
+/* 배포된 분석 앱 (iframe) */
+.embed{margin-top:64px}
+.embed-frame{display:block;width:100%;height:clamp(640px,90svh,900px);border:0;border-radius:6px;background:var(--bg);outline:1px solid var(--line)}
+.embed-note{margin-top:14px;font-size:13px;color:var(--muted);text-align:center}
+.embed-note a{color:var(--sub);text-decoration:underline;text-underline-offset:3px}
+.embed-note a:hover{color:var(--red)}
 .missing{margin-top:90px;display:grid;grid-template-columns:1fr 1fr;gap:28px}
 .mcard{border-top:1px solid var(--line);padding-top:24px}
 .mcard .k{color:var(--sub);font-size:14px}
 .mcard .v{font-size:clamp(56px,6vw,96px);font-weight:200;letter-spacing:-.04em;margin-top:8px}
-@media (max-width:860px){.ask-grid,.missing{grid-template-columns:1fr}.panel{position:relative;top:0;min-height:0;margin:6px 0 18px;padding:24px 18px}.steps{margin:24px 0 26px}.step{font-size:10px}}
+@media (max-width:860px){.ask-grid,.missing{grid-template-columns:1fr}.panel{position:relative;top:0;min-height:0;margin:6px 0 18px;padding:24px 18px}.steps{margin:24px 0 26px}.step{font-size:10px}.embed{margin-top:40px}.embed-frame{height:min(760px,88svh)}}
 
 /* vs */
 #vs{text-align:center;overflow:hidden}
@@ -376,8 +382,11 @@ footer .logo{color:#fff}
       <div class="steps" id="steps"><div class="fill" id="fill"></div></div>
       <p class="ans-q" id="ansQ" data-t="panelHint"></p>
       <p class="ans" id="ans"></p>
-      <details class="tool"><summary data-t="toolSum"></summary><p id="toolTxt" data-t="toolNone"></p></details>
     </aside>
+  </div>
+  <div class="embed">
+    <iframe class="embed-frame" id="appFrame" src="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/?embed=true" title="Task Insight 분석 앱 (질문 입력, 분석 계획 승인, 결과 표시)" loading="lazy" allow="clipboard-write"></iframe>
+    <p class="embed-note"><a href="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/" target="_blank" rel="noopener" data-t="embedFallback"></a></p>
   </div>
   <div class="missing">
     <div class="mcard rv"><div class="k" data-t="miss1"></div><div class="v" id="miss1">—</div></div>
@@ -458,11 +467,11 @@ const TEXT = {
   trLead2:"그냥 계산하면 {budgetWrong}{budgetUnit}. 진짜 예산은 {budgetRight}{budgetUnit}입니다.",
   trRight:"올바른 합계", trWrong:"잘못 더한 값",
   askLabel:"Ask AI", askTitle:"ASK",
-  askLead:"질문을 고르면 AI가 계산 도구를 고르고, 파이썬이 계산한 숫자만 보여 줍니다.",
-  panelTop:"에이전트 처리 과정", badge:"예시 답 · 연결 전",
-  panelHint:"왼쪽에서 질문을 골라 주세요.",
-  notConnected:"아직 연결 전이에요",
-  toolSum:"근거(사용한 도구 이름)", toolNone:"연결되면 AI가 고른 계산 도구 이름이 여기에 표시됩니다.",
+  askLead:"이런 질문을 해 보세요. 아래 앱에 질문을 입력하면 AI가 계산 도구를 고르고, 파이썬이 계산한 숫자만 보여 줍니다.",
+  panelTop:"에이전트 처리 과정", badge:"예시 질문",
+  panelHint:"아래 앱에 질문을 입력하면 AI가 분석 계획을 세우고, 승인하면 계산 결과를 보여 줍니다.",
+  tryIt:"이 질문을 아래 앱에 입력해 보세요.",
+  embedFallback:"화면이 보이지 않으면 새 창에서 열기",
   steps:["질문 받기","AI가 계산 도구 고르기","파이썬이 계산","결과 받기","AI가 답 정리","정답표로 채점"],
   questions:[
     { id:"Q1", title:"늦어진 업무", q:"현재 기한을 초과한 미완료 업무는 몇 건인가?" },
@@ -482,14 +491,7 @@ const TEXT = {
   ftRef:"디자인 참고: 국내 디지털 에이전시 웹사이트의 레이아웃과 움직임"
 };
 
-/* ===== 정답은 넣지 않습니다. 에이전트가 연결되면 채워집니다 ===== */
-const ANSWERS = { Q1: null, Q2: null, Q3: null, Q4: null, Q5: null, Q6: null, Q7: null };
-
-async function askAgent(questionId) {
-  // 여기서 서버(/api/ask)를 부를 예정
-  // 예: const r = await fetch('/api/ask', {method:'POST', body: JSON.stringify({id: questionId})});
-  return ANSWERS[questionId] ?? null;
-}
+/* 분석 결과(숫자)는 이 페이지에 쓰지 않습니다. 아래 iframe 안의 앱(엔진 계산 결과)에서만 나옵니다. */
 
 /* ---------- 글 채우기 ---------- */
 const fill = s => String(s).replace(/\{(\w+)\}/g, (_, k) => DATA[k] ?? "");
@@ -570,10 +572,8 @@ async function runQuestion(q, btn) {
     gsap.to(fillBar, { width: `${(i / (steps.length - 1)) * 84}%`, duration: .35, ease: "power2.out" });
     await new Promise(r => setTimeout(r, reduce ? 0 : 380));
   }
-  const result = await askAgent(q.id);
   if (my !== running) return;
-  const text = result == null ? TEXT.notConnected : String(result.answer ?? result);
-  document.getElementById("toolTxt").textContent = result && result.tool ? result.tool : TEXT.toolNone;
+  const text = TEXT.tryIt;
   if (reduce) { ans.textContent = text; return; }
   for (let i = 0; i <= text.length; i++) { if (my !== running) return; ans.textContent = text.slice(0, i); await new Promise(r => setTimeout(r, 35)); }
 }
