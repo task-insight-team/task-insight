@@ -29,6 +29,8 @@ config = types.GenerateContentConfig(tools=[tool])
 # 모델이 고른 function_call의 name·args를 그대로 run_tool(ds, name, dict(args))에 넘긴다 (검증은 엔진이 함)
 ```
 `aggregate` 필터의 `in` 값은 목록(`["P01", "P05"]`)과 쉼표 문자열(`"P01,P05"`)을 모두 받습니다. 숫자·날짜 비교 값도 문자열로 보내면 엔진이 컬럼 형식에 맞춰 바꿉니다.
+`count_overdue_tasks`·`summarize_by_category`·`calculate_completion_rate`는 `department`(예: `"품질"`, `"품질팀"`도 됨)·`project_id`(예: `"P05"`)로 범위를 좁힐 수 있습니다 (생략하면 전체).
+데이터에 없는 대상(없는 부서·오타 ID)은 `error`에 가능한 값과 함께 안내하고, 대상은 맞는데 0건이면 정상 결과 0(목록은 빈 행)입니다. 평균·완료율처럼 분모가 0이면 "0건이라 계산할 수 없습니다" 오류입니다.
 업무명·프로젝트명은 결과 rows에 없습니다. 화면에 이름이 필요하면 `ds.main`/`ds.projects`에서 ID로 찾습니다 (LLM에는 보내지 않음).
 
 ## 지킬 것

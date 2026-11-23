@@ -165,15 +165,21 @@ class AggregateParams(BaseModel):
 class CountOverdueParams(BaseModel):
     as_of: str  # 기준일 YYYY-MM-DD (재현성을 위해 필수)
     group_by: Optional[str] = None
+    department: Optional[str] = None  # 이 부서 업무만 (예: "품질"). 생략하면 전체
+    project_id: Optional[str] = None  # 이 프로젝트 업무만 (예: "P05"). 생략하면 전체
 
 
 class SummarizeByCategoryParams(BaseModel):
     group_by: str  # 예: "부서", "프로젝트ID", "분류", "상태"
     as_of: Optional[str] = None  # 주면 기한 초과 건수도 계산
+    department: Optional[str] = None  # 이 부서 업무만 (예: "품질"). 생략하면 전체
+    project_id: Optional[str] = None  # 이 프로젝트 업무만 (예: "P05"). 생략하면 전체
 
 
 class CompletionRateParams(BaseModel):
-    group_by: Optional[str] = None  # 예: "프로젝트ID"
+    group_by: Optional[str] = None  # 예: "프로젝트ID", "담당자ID"
+    department: Optional[str] = None  # 이 부서 업무만 (예: "연구"). 생략하면 전체
+    project_id: Optional[str] = None  # 이 프로젝트 업무만 (예: "P05"). 생략하면 전체
 
 
 class ComparePeriodsParams(BaseModel):
