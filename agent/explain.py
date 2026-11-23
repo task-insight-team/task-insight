@@ -62,7 +62,19 @@ def explain_result(step: PlanStep, res: ToolResult) -> str:
         body = _BUILDERS.get(res.tool, _generic)(res)
     except Exception:  # noqa: BLE001 - 설명 실패가 결과 표시를 막지 않게
         body = _generic(res)
+    scope = _scope_label(res.params)
+    if scope:  # 부서·프로젝트로 좁힌 결과임을 첫머리에 밝힌다 (전체 결과로 오해하지 않게)
+        body = f"[{scope}] {body}"
     return f"{body}\n근거: {res.basis}" if res.basis else body
+
+
+def _scope_label(params: dict) -> str:
+    parts = []
+    if params.get("department"):
+        parts.append(f"부서 {params['department']}")
+    if params.get("project_id"):
+        parts.append(f"프로젝트 {params['project_id']}")
+    return " · ".join(parts)
 
 
 def _generic(res: ToolResult) -> str:
@@ -87,7 +99,7 @@ def _overdue(res: ToolResult) -> str:
 
 def _summary(res: ToolResult) -> str:
     if not res.rows:
-        return "집계할 데이터가 없습니다."
+        return "조건에 맞는 업무가 0건입니다." if _scope_label(res.params) else "집계할 데이터가 없습니다."
     key = "미완료(건)"
     cat = _first_key(res.rows)
     names, top = _leaders(res.rows, key)
@@ -108,6 +120,8 @@ def _completion(res: ToolResult) -> str:
     cat = _first_key(res.rows)
     names, low = _leaders(res.rows, "완료율(%)")
     first = res.rows[0]
+    if len(res.rows) == 1:  # 대상이 하나면 '가장 낮은'이라고 쓰지 않는다
+        return f"{first[cat]}의 완료율은 {pct(low)}입니다 (완료 {num(first.get('완료(건)'))}건 / 전체 {num(first.get('전체(건)'))}건)."
     return (f"완료율이 가장 낮은 {cat}은(는) {_names(names)}로 {pct(low)}입니다"
             f" (완료 {num(first.get('완료(건)'))}건 / 전체 {num(first.get('전체(건)'))}건). 전체 완료율은 {pct(res.value)}입니다.")
 

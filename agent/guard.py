@@ -4,7 +4,8 @@
 - 허용 목록(engine.TOOLS)에 있는 도구인가
 - contracts의 *Params 모델로 형식이 맞는가 (모델 검증만, 계산 없음)
 - 컬럼이 데이터에 있고 자유 텍스트 컬럼이 아닌가
-- 필터 값(부서·프로젝트·직원 등)이 데이터에 실제로 있는가  ← 엔진은 '없는 값'과 '0건'을 구분하지 못함
+- 필터 값과 직접 범위 인자(department·project_id)가 데이터에 실제로 있는가
+  (엔진도 없는 대상과 0건을 구분하지만, 승인 전에 되묻기 위해 계획 단계에서 먼저 확인한다)
 - 기준일(as_of)은 외부에서 받은 값으로 고정
 """
 
@@ -37,6 +38,27 @@ COLUMN_FIELDS: dict[str, list[str]] = {
     "mh_overrun": ["group_by"],
 }
 VALUE_OPS = ("==", "!=", "in")
+
+
+# 도구가 직접 받는 범위 인자 → 값 목록을 확인할 컬럼. 실제 Params 모델에 필드가 있는 도구에서만 유효하다.
+DIRECT_SCOPE = {"department": "department", "project_id": "project_id"}
+
+
+def supports(tool: str, field: str) -> bool:
+    spec = TOOLS.get(tool)
+    return spec is not None and field in spec.params.model_fields
+
+
+def _canonical(vocab: Vocabulary, col: str, value: Any) -> Optional[str]:
+    """'품질팀'·'품질부'는 데이터의 '품질'로 맞춘다 (엔진 규칙과 같음). 없는 값이면 None."""
+    allowed = vocab.values.get(col, [])
+    v = str(value).strip()
+    if v in allowed:
+        return v
+    for suffix in ("팀", "부서", "부"):
+        if v.endswith(suffix) and v[: -len(suffix)] in allowed:
+            return v[: -len(suffix)]
+    return None
 
 
 class Rejected(Exception):
@@ -112,8 +134,13 @@ def validate_call(name: str, args: Any, vocab: Vocabulary) -> tuple[dict, list[s
     for flt in params.get("filters") or []:
         col = _check_column(vocab, table, flt["column"])
         _check_values(vocab, col, flt["op"], flt.get("value"))
-    if name == "cost_vs_budget" and params.get("project_id"):
-        _check_values(vocab, "project_id", "==", params["project_id"])
+    for field, col in DIRECT_SCOPE.items():  # department·project_id 직접 인자 (지원하는 도구만 model_dump에 남는다)
+        if supports(name, field) and params.get(field) not in (None, ""):
+            canon = _canonical(vocab, col, params[field])
+            if canon is None:
+                raise Rejected(f"{show(col)} '{params[field]}'은(는) 데이터에 없습니다. "
+                               f"가능한 값: {', '.join(vocab.values.get(col, []))}")
+            params[field] = canon
     return params, notes
 
 
@@ -214,10 +241,11 @@ def step_covers(tool: str, params: dict, cond: Condition, vocab: Vocabulary) -> 
     def has(cols: tuple, value: str) -> bool:
         return any(c in cols and op in ("==", "in") and value in vals for c, op, vals in flt)
 
-    if cond.kind == "department":
-        return has(("department", "lead_department"), cond.value)
-    if cond.kind == "project":
-        return has(("project_id",), cond.value) or (tool == "cost_vs_budget" and params.get("project_id") == cond.value)
+    if cond.kind == "department":  # filters 또는 department 직접 인자 (지원 도구만)
+        return has(("department", "lead_department"), cond.value) or (
+            supports(tool, "department") and params.get("department") == cond.value)
+    if cond.kind == "project":  # filters 또는 project_id 직접 인자 (지원 도구만)
+        return has(("project_id",), cond.value) or (supports(tool, "project_id") and params.get("project_id") == cond.value)
     if cond.kind == "employee":
         return has(("assignee_id", "employee_id"), cond.value)
     if cond.kind == "status":
