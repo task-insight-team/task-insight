@@ -165,10 +165,21 @@ def test_refuse_passes_when_agent_declines(datasets):
 
 
 def test_refuse_fails_when_agent_runs_another_analysis(datasets):
-    """없는 '부서'를 물었는데 지역별 매출을 대신 계산하면 오답 (2026-11-23 화면 시험에서 실제로 나온 행동)."""
-    other = [LIMIT, ("aggregate", {"op": "sum", "value_column": "sales", "group_by": ["region"]})]
-    r = refuse_run(datasets, "N1", other, other)
-    assert not r["pass"] and "다른 분석" in r["reason"]
+    """없는 '상품'을 물었는데 전체 매출을 대신 계산해 결과를 내면 오답 (2026-11-23 실제 Gemini에서 나온 행동).
+
+    에이전트 동작과 무관하게 채점 규칙만 확인한다 (에이전트가 막도록 고쳐져도 이 테스트는 그대로 유효).
+    """
+    from engine import run_tool
+    shown = run_tool(datasets["sample"], "aggregate", {"op": "sum", "value_column": "sales"})
+    run = ev.Run("N2", "상품별 매출은?", "ok", set="refuse", stage="exec",
+                 calls=[{"tool": "aggregate", "params": shown.params}], results=[shown])
+    r = ev.grade([run])[0]
+    assert shown.ok and not r["pass"] and "다른 분석" in r["reason"]
+    # 실행은 했지만 도구가 계산 불가 사유를 낸 경우(숫자 없음)는 정답
+    failed = run_tool(datasets["sample"], "aggregate", {"op": "sum", "value_column": "상품"})
+    ok_run = ev.Run("N2", "상품별 매출은?", "error", set="refuse", stage="exec",
+                    calls=[{"tool": "aggregate", "params": failed.params}], results=[failed])
+    assert not failed.ok and ev.grade([ok_run])[0]["pass"]
 
 
 def test_refuse_fails_on_api_error(datasets):
