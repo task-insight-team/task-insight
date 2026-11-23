@@ -1,0 +1,10 @@
+{
+  "meta": {"dataset": "data/sample.csv (과제 문서 제공)", "notice": "질문 문장만. 정답은 eval/sample_expected.json"},
+  "questions": [
+    {"id": "S1", "question": "전체 매출은?"},
+    {"id": "S2", "question": "지역별 매출은?"},
+    {"id": "S3", "question": "월별 매출은?"},
+    {"id": "S4", "question": "전월 대비 매출 변화와 감소 지역은?"},
+    {"id": "S5", "question": "2026-01의 전월 대비 매출 변화는?"}
+  ]
+}
