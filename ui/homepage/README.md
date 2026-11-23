@@ -18,8 +18,8 @@
 - 배포 앱 주소: https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/
   - iframe `src`는 `…streamlit.app/?embed=true&embed_options=dark_theme`(홈페이지의 검은 바탕에 맞춘 다크 테마), 바로 아래 "화면이 보이지 않으면 새 창에서 열기" 링크는 `?embed=true` 없는 원래 주소(`target="_blank"`)입니다. 주소가 바뀌면 `index.html`의 `#ask` 섹션에서 두 곳을 고치세요.
 - **앱이 잠들어 있으면 처음 열 때 30초~1분 걸립니다.** 발표 전에 한 번 열어 깨워 두세요.
-- 위쪽 질문 목록은 "이런 질문을 해 보세요" 예시입니다. 누르면 질문과 "이 질문을 아래 앱에 입력해 보세요" 안내만 나오고, 답은 만들지 않습니다.
-- 안내 문장은 `const TEXT`(`askLead`, `panelHint`, `tryIt`, `embedFallback`)에서 고칩니다.
+- 왼쪽 질문 목록은 **발표용 질문 5개**입니다 (`TEXT.questions`). 누르면 처리 단계 6개가 차례로 켜지고, 그 질문을 **어떻게 처리하는지**(`how`)와 AI가 고르는 계산 도구 예(`tool`)가 설명으로 나온 뒤 "이 질문을 아래 앱에 입력해 보세요"로 이어집니다. 숫자·정답은 쓰지 않고, 결과는 오른쪽 앱에서만 나옵니다. 도구 이름은 예시이고 실제로는 AI가 고릅니다.
+- 안내 문장은 `const TEXT`(`askLead`, `panelHint`, `tryIt`, `toolLead`, `embedFallback`, `questions`)에서 고칩니다.
 
 ## 정답은 넣지 않았습니다
 - 이 페이지에는 분석 결과 숫자를 직접 쓰지 않습니다 (`ANSWERS`·`askAgent`는 없앴습니다). 화면의 분석 수치는 iframe 안의 앱(엔진 계산 결과)에서만 나옵니다.

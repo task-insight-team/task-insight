@@ -217,7 +217,7 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 .step.on{color:#fff}
 .step.on i{background:var(--red);border-color:var(--red);box-shadow:0 0 18px var(--red-dim)}
 .ans-q{font-size:15px;color:var(--sub);line-height:1.6}
-.ans{margin-top:16px;font-size:clamp(24px,2.4vw,36px);font-weight:600;letter-spacing:-.03em;line-height:1.35;min-height:1.4em}
+.ans{margin-top:16px;font-size:clamp(19px,1.7vw,25px);font-weight:600;letter-spacing:-.03em;line-height:1.45;min-height:1.4em}
 .tool{margin-top:30px;border-top:1px solid var(--line);padding-top:18px;font-size:13px;color:var(--sub)}
 .tool summary{cursor:pointer;list-style:none}
 .tool summary::-webkit-details-marker{display:none}
@@ -384,6 +384,7 @@ footer .logo{color:#fff}
         <div class="steps" id="steps"><div class="fill" id="fill"></div></div>
         <p class="ans-q" id="ansQ" data-t="panelHint"></p>
         <p class="ans" id="ans"></p>
+        <div class="tool"><p id="toolTxt"></p></div>
       </aside>
       <div class="embed">
         <iframe class="embed-frame" id="appFrame" src="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/?embed=true&embed_options=dark_theme" title="Task Insight 분석 앱 (질문 입력, 분석 계획 승인, 결과 표시)" loading="lazy" allow="clipboard-write"></iframe>
@@ -476,14 +477,19 @@ const TEXT = {
   tryIt:"이 질문을 아래 앱에 입력해 보세요.",
   embedFallback:"화면이 보이지 않으면 새 창에서 열기",
   steps:["질문 받기","AI가 계산 도구 고르기","파이썬이 계산","결과 받기","AI가 답 정리","정답표로 채점"],
+  toolLead:"AI가 고르는 계산 도구(예)",
+  /* 발표용 질문 5개. how = 이 질문을 어떻게 처리하는지 설명 (숫자·정답은 쓰지 않음, 결과는 아래 앱에서만 나옵니다) */
   questions:[
-    { id:"Q1", title:"늦어진 업무", q:"현재 기한을 초과한 미완료 업무는 몇 건인가?" },
-    { id:"Q2", title:"부서별 밀린 일", q:"부서별 미완료 업무 수는?" },
-    { id:"Q3", title:"시간 초과 1위", q:"계획 대비 실제 MH가 가장 많이 초과된 프로젝트는?" },
-    { id:"Q4", title:"예산 초과 1위", q:"예산 대비 비용 초과율이 가장 높은 프로젝트는?" },
-    { id:"Q5", title:"가장 느린 프로젝트", q:"완료율이 가장 낮은 프로젝트는?" },
-    { id:"Q6", title:"빠진 정보", q:"확인이 필요한 누락 데이터는 몇 건인가?" },
-    { id:"Q7", title:"제일 바쁜 직원", q:"담당 업무가 가장 많이 배정된 직원은 누구인가?" }
+    { id:"D1", title:"부서별 밀린 일", q:"부서별 미완료 업무 현황은?",
+      tool:"summarize_by_category", how:"업무 표에 직원 표를 자동으로 붙여, 부서별 건수와 인원 대비 부담까지 계산합니다." },
+    { id:"D2", title:"시간 초과 1위", q:"계획 대비 실적 MH 초과가 가장 큰 프로젝트는?",
+      tool:"mh_overrun", how:"업무별로 계획보다 더 쓴 시간만 더해서 순위를 매기고, 동점이면 함께 보여 줍니다." },
+    { id:"D3", title:"예산 초과 1위", q:"예산 대비 비용 초과율이 가장 높은 프로젝트는?",
+      tool:"cost_vs_budget", how:"표 3개를 붙여도 예산이 업무 수만큼 중복해서 더해지지 않게 막고 계산합니다." },
+    { id:"D4", title:"품질팀 지연 업무", q:"품질팀에서 기한이 지났는데 완료되지 않은 업무는 몇 건이야?",
+      tool:"count_overdue_tasks (부서=품질)", how:"날짜·상태·부서 조건을 모두 걸어 품질팀만 셉니다. 전사 숫자로 대신 답하지 않습니다." },
+    { id:"D5", title:"빠진 정보", q:"담당자나 기한이 비어 있어 확인이 필요한 업무는?",
+      tool:"check_missing_data", how:"확인이 필요한 빈칸과, 원래 비어 있어도 정상인 칸을 구분해서 알려 줍니다." }
   ],
   miss1:"담당자가 없는 업무", miss2:"기한이 없는 업무",
   vsLabel:"Result", vsTitle:"SAME Q",
@@ -567,7 +573,7 @@ async function runQuestion(q, btn) {
   const steps = [...stepsEl.querySelectorAll(".step")], fillBar = document.getElementById("fill");
   steps.forEach(s => s.classList.remove("on")); gsap.set(fillBar, { width: 0 });
   const ansQ = document.getElementById("ansQ"), ans = document.getElementById("ans");
-  ansQ.textContent = q.q; ans.textContent = "";
+  ansQ.textContent = q.q; ans.textContent = ""; document.getElementById("toolTxt").textContent = "";
   gsap.fromTo(ansQ, { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: .6, ease: "power2.out" });
   for (let i = 0; i < steps.length; i++) {
     if (my !== running) return;
@@ -576,9 +582,11 @@ async function runQuestion(q, btn) {
     await new Promise(r => setTimeout(r, reduce ? 0 : 380));
   }
   if (my !== running) return;
-  const text = TEXT.tryIt;
-  if (reduce) { ans.textContent = text; return; }
-  for (let i = 0; i <= text.length; i++) { if (my !== running) return; ans.textContent = text.slice(0, i); await new Promise(r => setTimeout(r, 35)); }
+  const text = q.how, toolTxt = document.getElementById("toolTxt");
+  const toolLine = `${TEXT.toolLead}: ${q.tool} · ${TEXT.tryIt}`;
+  if (reduce) { ans.textContent = text; toolTxt.textContent = toolLine; return; }
+  for (let i = 0; i <= text.length; i++) { if (my !== running) return; ans.textContent = text.slice(0, i); await new Promise(r => setTimeout(r, 22)); }
+  toolTxt.textContent = toolLine;
 }
 
 /* ---------- 움직임 ---------- */
