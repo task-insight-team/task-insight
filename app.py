@@ -111,11 +111,12 @@ if st.session_state.get("data_key") != data_key:
 st.subheader("2. 질문")
 
 MONEY_COLS = ["예산", "실적 인건비", "실적 비인건비", "실적 총비용"]
-KAFE_EXAMPLES = [  # 클릭하면 질문 입력창을 채워 주는 보조 기능 (직접 입력이 기본)
+KAFE_EXAMPLES = [  # 발표용 질문 5개. 클릭하면 질문 입력창을 채워 주는 보조 기능 (직접 입력이 기본)
     "부서별 미완료 업무 현황은?",
-    "기한이 지난 미완료 업무는 몇 건인가?",
-    "비용 초과율이 가장 큰 프로젝트는?",
-    "완료율이 가장 낮은 프로젝트는?",
+    "계획 대비 실적 MH 초과가 가장 큰 프로젝트는?",
+    "예산 대비 비용 초과율이 가장 높은 프로젝트는?",
+    "품질팀에서 기한이 지났는데 완료되지 않은 업무는 몇 건이야?",
+    "담당자나 기한이 비어 있어 확인이 필요한 업무는?",
 ]
 SAMPLE_EXAMPLES = ["지역별 매출은?", "전월 대비 매출 변화와 감소 지역은?"]  # month·region·sales 컬럼이 있는 일반 CSV용
 
@@ -183,8 +184,8 @@ question = st.text_input("질문", key="question", placeholder="예: 품질팀�
 examples = example_questions(ds)
 if examples:
     st.caption("자유롭게 질문을 입력하세요. 아래 예시를 누르면 입력창에 채워집니다.")
-    for col, ex in zip(st.columns(len(examples)), examples):
-        col.button(ex, key=f"ex_{ex}", on_click=lambda e=ex: st.session_state.update(question=e))
+    for ex in examples:  # 질문이 길어서 한 줄에 하나씩
+        st.button(ex, key=f"ex_{ex}", width="stretch", on_click=lambda e=ex: st.session_state.update(question=e))
 else:
     st.caption("올린 데이터의 컬럼 이름을 넣어 자유롭게 질문해 보세요.")
 
