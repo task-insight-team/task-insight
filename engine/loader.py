@@ -92,6 +92,15 @@ def _show(col: str) -> str:
     return DISPLAY_NAMES.get(col, col)
 
 
+def _label(col: str) -> str:
+    """사용자 안내용 컬럼 이름: '기한(due_date)'. 한국어 이름이 없으면 원래 이름."""
+    name = _show(col)
+    return f"{name}({col})" if name != col else col
+
+
+KIND_LABEL = {"tasks": "업무(tasks)", "employees": "직원(employees)", "projects": "프로젝트(projects)"}
+
+
 def _issue(level: str, code: str, message: str, mask: pd.Series, df: pd.DataFrame) -> Issue:
     hit = df.loc[mask, "_row"].tolist()
     return Issue(level=level, code=code, message=message, count=len(hit), rows=[int(r) for r in hit[:MAX_LISTED_ROWS]])
@@ -156,13 +165,13 @@ def _to_number(df: pd.DataFrame, col: str, issues: list[Issue], allow_negative: 
     bad = text.notna() & ~clean.str.match(NUMBER_RE)
     if bad.any():
         issues.append(_issue("warning", "invalid_number",
-                             f"'{col}'에 숫자가 아닌 값이 있습니다 (예: N/A, 없음). 해당 행은 계산에서 제외합니다.", bad, df))
+                             f"'{_label(col)}'에 숫자가 아닌 값이 있습니다 (예: N/A, 없음). 해당 행은 계산에서 제외합니다.", bad, df))
         df.loc[bad, "_invalid"] = True
     df[col] = pd.to_numeric(clean.where(~bad & text.notna()), errors="coerce").astype("Float64")
     if not allow_negative:
         neg = (df[col] < 0).fillna(False).astype(bool)
         if neg.any():
-            issues.append(_issue("warning", "negative_number", f"'{col}'에 음수가 있습니다. 해당 행은 계산에서 제외합니다.",
+            issues.append(_issue("warning", "negative_number", f"'{_label(col)}'에 음수가 있습니다. 해당 행은 계산에서 제외합니다.",
                                  neg, df))
             df.loc[neg, "_invalid"] = True
 
@@ -218,13 +227,15 @@ def _validate_standard(df: pd.DataFrame, kind: str, filename: str, encoding: Opt
     if missing:
         report = _report(df, filename, kind, encoding, [Issue(
             level="error", code="missing_columns",
-            message=f"{kind} 파일에 필요한 컬럼이 없습니다: {', '.join(missing)}")])
+            message=f"{KIND_LABEL[kind]} 파일에 필요한 컬럼이 없습니다: {', '.join(_label(c) for c in missing)}")])
         return None, report
 
     req = REQUIRED_VALUES[kind]
     miss = df[req].isna().any(axis=1)
     if miss.any():
-        issues.append(_issue("warning", "missing_values", f"꼭 있어야 할 값이 비어 있습니다 ({', '.join(req)}). 해당 행은 계산에서 제외합니다.",
+        blank = [c for c in req if df.loc[miss, c].isna().any()]  # 실제로 비어 있는 컬럼만 안내
+        issues.append(_issue("warning", "missing_values",
+                             f"꼭 있어야 할 값이 비어 있습니다 ({', '.join(_label(c) for c in blank)}). 해당 행은 계산에서 제외합니다.",
                              miss, df))
         df.loc[miss, "_invalid"] = True
 
@@ -233,14 +244,14 @@ def _validate_standard(df: pd.DataFrame, kind: str, filename: str, encoding: Opt
         if m.any():
             note = f" ({UNASSIGNED})" if col == "assignee_id" else ""
             issues.append(_issue("warning", "needs_check",
-                                 f"'{col}'({_show(col)})이 비어 있는 행이 있습니다{note}. 값은 그대로 두고 확인 필요로 표시합니다.", m, df))
+                                 f"'{_label(col)}' 빈칸이 있습니다{note}. 값은 그대로 두고 확인 필요로 표시합니다.", m, df))
 
     for col in DATE_COLUMNS[kind]:
         text = df[col]
         parsed = pd.to_datetime(text, format=DATE_FORMAT, errors="coerce")
         bad = text.notna() & parsed.isna()
         if bad.any():
-            issues.append(_issue("warning", "invalid_date", f"'{col}' 날짜 형식이 YYYY-MM-DD가 아닙니다. 해당 행은 계산에서 제외합니다.",
+            issues.append(_issue("warning", "invalid_date", f"'{_label(col)}' 날짜 형식이 YYYY-MM-DD가 아닙니다. 해당 행은 계산에서 제외합니다.",
                                  bad, df))
             df.loc[bad, "_invalid"] = True
         df[col] = parsed
@@ -251,7 +262,7 @@ def _validate_standard(df: pd.DataFrame, kind: str, filename: str, encoding: Opt
     for col, allowed in ALLOWED_VALUES[kind].items():
         bad = df[col].notna() & ~df[col].isin(allowed)
         if bad.any():
-            issues.append(_issue("warning", "invalid_value", f"'{col}' 값은 {', '.join(allowed)} 중 하나여야 합니다. 해당 행은 계산에서 제외합니다.",
+            issues.append(_issue("warning", "invalid_value", f"'{_label(col)}' 값은 {', '.join(allowed)} 중 하나여야 합니다. 해당 행은 계산에서 제외합니다.",
                                  bad, df))
             df.loc[bad, "_invalid"] = True
 
@@ -271,7 +282,7 @@ def _task_consistency(df: pd.DataFrame) -> list[Issue]:
         ("warning", "date_without_done", "완료일이 있는데 상태가 '완료'가 아닙니다 (상태 기준으로 계산).", ~done & df["completed_at"].notna()),
         ("warning", "issue_type_missing", f"'{NONCONFORMANCE_CATEGORY}' 업무인데 문제유형이 비어 있습니다.", nonconf & df["issue_type"].isna()),
         ("info", "structural_blank", "미완료 업무의 완료일 빈칸은 정상입니다 (구조적 공백).", ~done & df["completed_at"].isna()),
-        ("info", "structural_blank", f"'{NONCONFORMANCE_CATEGORY}'가 아닌 업무의 문제유형 빈칸은 정상입니다 (구조적 공백).",
+        ("info", "structural_blank", f"분류가 '{NONCONFORMANCE_CATEGORY}'이 아닌 업무의 문제유형 빈칸은 정상입니다 (구조적 공백).",
          ~nonconf & df["issue_type"].isna()),
     ]
     for level, code, msg, mask in checks:
@@ -299,7 +310,7 @@ def _validate_generic(df: pd.DataFrame, filename: str, encoding: Optional[str]):
             if units:
                 df[col] = df[col].str.extract(UNIT_RE, expand=True)[0].where(df[col].notna())
                 issues.append(Issue(level="info", code="unit_removed",
-                                    message=f"'{col}'의 단위 기호({', '.join(units)})를 빼고 숫자로 읽었습니다.",
+                                    message=f"'{_label(col)}'의 단위 기호({', '.join(units)})를 빼고 숫자로 읽었습니다.",
                                     count=int(nonnull.str.contains(r"[₩$원%]").sum())))
             _to_number(df, col, issues, allow_negative=True)
     issues.extend(_duplicate_issues(df, None))
@@ -328,11 +339,11 @@ def _normalize_dates(df: pd.DataFrame, col: str, nonnull: pd.Series, issues: lis
     df.loc[good[good].index, col] = iso[good]
     if changed:
         issues.append(Issue(level="info", code="date_normalized",
-                            message=f"'{col}' 날짜 표기를 {label} 형식으로 맞췄습니다.",
+                            message=f"'{_label(col)}' 날짜 표기를 {label} 형식으로 맞췄습니다.",
                             count=changed))
     if len(bad):
         mask = df.index.isin(bad)
-        issues.append(_issue("warning", "invalid_date", f"'{col}'에 날짜로 읽을 수 없는 값이 있습니다. 해당 행은 계산에서 제외합니다.",
+        issues.append(_issue("warning", "invalid_date", f"'{_label(col)}'에 날짜로 읽을 수 없는 값이 있습니다. 해당 행은 계산에서 제외합니다.",
                              pd.Series(mask, index=df.index), df))
         df.loc[mask, "_invalid"] = True
     return True
@@ -349,7 +360,7 @@ def _duplicate_issues(df: pd.DataFrame, id_col: Optional[str]) -> list[Issue]:
         exact = df.duplicated(subset=data_cols, keep=False)
         dup_id = df[id_col].notna() & df.duplicated(subset=[id_col], keep=False) & ~exact
         if dup_id.any():
-            issues.append(_issue("warning", "duplicate_id", f"'{id_col}'는 같은데 내용이 다른 행이 있습니다. 확인이 필요합니다.",
+            issues.append(_issue("warning", "duplicate_id", f"'{_label(id_col)}'는 같은데 내용이 다른 행이 있습니다. 확인이 필요합니다.",
                                  dup_id, df))
     return issues
 
@@ -399,7 +410,8 @@ def load_dataset(files: dict[str, Source], drop_duplicates: bool = False) -> Loa
         return LoadResult(dataset=None, reports=reports, errors=[Issue(level="error", code=code, message=msg)])
 
     if any(not r.ok for r in reports):
-        return fail("file_errors", "읽을 수 없는 파일이 있습니다. 파일별 검증 결과를 확인해 주세요.")
+        bad = ", ".join(r.filename or "(이름 없음)" for r in reports if not r.ok)
+        return fail("file_errors", f"읽을 수 없는 파일이 있습니다 ({bad}). 파일별 검증 결과를 확인해 주세요.")
     if not tables:
         return fail("no_files", "분석할 파일이 없습니다.")
     for kind, dfs in tables.items():
@@ -438,7 +450,7 @@ def build_dataset(tasks: pd.DataFrame, employees: Optional[pd.DataFrame], projec
         if dup.any():
             ids = ", ".join(sorted(valid.loc[dup, key].unique())[:10])
             issues.append(Issue(level="error", code="duplicate_key",
-                                message=f"{name} 표의 {key}가 중복됩니다({ids}). 결합하면 업무 행이 늘어나므로 결합하지 않습니다.",
+                                message=f"{name} 표의 {_label(key)}가 중복됩니다({ids}). 결합하면 업무 행이 늘어나므로 결합하지 않습니다.",
                                 count=int(dup.sum())))
             return None, report(False, len(tasks))
 

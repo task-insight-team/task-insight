@@ -85,3 +85,34 @@ def test_sample_is_generic():
     _, rep = read_table(DATA / "sample.csv")
     assert rep.kind == "generic"
     assert {c.name: c.dtype for c in rep.columns} == {"month": "text", "region": "text", "sales": "number"}
+
+
+# ---------------------------------------------------------------------------
+# 사용자에게 보일 안내 문구: 한국어 컬럼 이름 + 원래 이름, 실제 문제만 안내
+# ---------------------------------------------------------------------------
+def messages(rep):
+    return {i.code: i.message for i in rep.issues}
+
+
+def test_messages_use_korean_names():
+    _, rep = read_table(ERR / "bad_tasks.csv")
+    m = messages(rep)
+    assert "'시작일(start_date)'" in m["invalid_date"]
+    assert "'계획MH(planned_mh)'" in m["negative_number"]
+    assert "'실적MH(actual_mh)'" in m["invalid_number"]
+    assert "'상태(status)'" in m["invalid_value"]
+    assert "'업무ID(task_id)'" in m["duplicate_id"]
+    _, rep = read_table(ERR / "missing_columns.csv")
+    assert rep.issues[0].message.startswith("업무(tasks) 파일에 필요한 컬럼이 없습니다: 기한(due_date)")
+
+
+def test_missing_values_names_only_blank_columns():
+    _, rep = read_table(ERR / "bad_tasks.csv")
+    msg = messages(rep)["missing_values"]
+    assert "분류(category)" in msg and "task_id" not in msg and "planned_mh" not in msg
+
+
+def test_file_errors_name_the_files():
+    from engine import load_dataset
+    res = load_dataset({"empty.csv": ERR / "empty.csv", "header_only.csv": ERR / "header_only.csv"})
+    assert not res.ok and "empty.csv" in res.errors[0].message and "header_only.csv" in res.errors[0].message
