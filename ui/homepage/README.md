@@ -16,7 +16,7 @@
 ## 분석 앱 연결 (iframe)
 - `#ask` 섹션에 배포된 Streamlit 앱을 **iframe**으로 끼워 넣었습니다. 질문 입력 → 분석 계획 → [승인하고 실행] → 표·차트·근거는 모두 이 앱 안에서 동작합니다.
 - 배포 앱 주소: https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/
-  - iframe `src`는 `…streamlit.app/?embed=true`, 바로 아래 "화면이 보이지 않으면 새 창에서 열기" 링크는 `?embed=true` 없는 원래 주소(`target="_blank"`)입니다. 주소가 바뀌면 `index.html`의 `#ask` 섹션에서 두 곳을 고치세요.
+  - iframe `src`는 `…streamlit.app/?embed=true&embed_options=dark_theme`(홈페이지의 검은 바탕에 맞춘 다크 테마), 바로 아래 "화면이 보이지 않으면 새 창에서 열기" 링크는 `?embed=true` 없는 원래 주소(`target="_blank"`)입니다. 주소가 바뀌면 `index.html`의 `#ask` 섹션에서 두 곳을 고치세요.
 - **앱이 잠들어 있으면 처음 열 때 30초~1분 걸립니다.** 발표 전에 한 번 열어 깨워 두세요.
 - 위쪽 질문 목록은 "이런 질문을 해 보세요" 예시입니다. 누르면 질문과 "이 질문을 아래 앱에 입력해 보세요" 안내만 나오고, 답은 만들지 않습니다.
 - 안내 문장은 `const TEXT`(`askLead`, `panelHint`, `tryIt`, `embedFallback`)에서 고칩니다.
