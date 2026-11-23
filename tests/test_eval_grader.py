@@ -229,3 +229,38 @@ def test_summary_markdown(datasets):
     report = ev.grade(ev.run_questions(qs, datasets, lambda q: FakeLLM(FakeLLM.calls(calls[q.id]), FakeLLM.calls(calls[q.id]))))
     md = ev.summary_md(report)
     assert "| core | 12/12 |" in md and "| refuse | 1/1 |" in md and "| N1 |" in md
+
+
+# ---------------------------------------------------------------------------
+# 시연 질문 묶음 (demo)
+# ---------------------------------------------------------------------------
+def test_demo_d4_answer_is_derived_from_answer_key_and_raw_csv():
+    """D4(품질팀 기한 초과 8건)는 엔진이 아니라 정답 파일 Q1의 업무 목록 × 원본 직원 CSV로 다시 계산해 확인한다."""
+    import pandas as pd
+    answers = {a["id"]: a for a in _json.loads(ev.KAFE_ANSWERS.read_text(encoding="utf-8"))["answers"]}
+    tasks = pd.read_csv(ev.KAFE_DIR / "tasks.csv", dtype=str)
+    emps = pd.read_csv(ev.KAFE_DIR / "employees.csv", dtype=str)
+    dept = tasks.set_index("task_id")["assignee_id"].map(emps.set_index("employee_id")["department"])
+    quality = sum(dept.get(t) == "품질" for t in answers["Q1"]["answer_ids"])
+    expected = _json.loads(ev.DEMO_EXPECTED.read_text(encoding="utf-8"))["answers"][0]
+    assert expected["id"] == "D4" and expected["checks"][0]["equals"] == quality == 8
+
+
+DEMO_RIGHT = {"D1": RIGHT["Q2"], "D2": RIGHT["Q3"], "D3": RIGHT["Q4"], "D5": RIGHT["Q6"],
+              "D4": ("count_overdue_tasks", {"as_of": AS_OF, "department": "품질"})}
+
+
+def test_demo_right_tools_pass(datasets):
+    qs = ev.load_questions(("demo",))
+    assert [q.id for q in qs] == ["D1", "D2", "D3", "D4", "D5"]
+    report = ev.grade(ev.run_questions(qs, datasets, lambda q: FakeLLM(FakeLLM.calls(DEMO_RIGHT[q.id]))))
+    assert all(r["pass"] for r in report), [(r["id"], r["reason"]) for r in report if not r["pass"]]
+
+
+def test_demo_company_wide_answer_fails(datasets):
+    """품질팀을 물었는데 전사 기한 초과(15건)로 답하면 오답 (에이전트 동작과 무관하게 채점 규칙 확인)."""
+    from engine import run_tool
+    whole = run_tool(datasets["kafe"], "count_overdue_tasks", {"as_of": AS_OF})
+    run = ev.Run("D4", "품질팀 기한 초과", "ok", set="demo", stage="exec",
+                 calls=[{"tool": whole.tool, "params": whole.params}], results=[whole])
+    assert whole.value == 15 and not ev.grade([run])[0]["pass"]

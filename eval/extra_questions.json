@@ -3,7 +3,8 @@
     "notice": "질문 문장만. 정답 값은 없다 (바꿔 말한 질문은 same_as의 원래 정답 규칙으로, 답하면 안 되는 질문은 '숫자 없이 끝남'으로 채점)",
     "sets": {
       "paraphrase": "평가 질문을 사용자가 자기 말로 바꿔 물은 것. 원래 질문과 정답이 같다",
-      "refuse": "데이터에 없는 컬럼·지표를 묻는 질문. 다른 분석을 대신 실행하지 않고 지원 불가·되묻기로 끝나야 정답 (과제 Step 1 통과 기준)"
+      "refuse": "데이터에 없는 컬럼·지표를 묻는 질문. 다른 분석을 대신 실행하지 않고 지원 불가·되묻기로 끝나야 정답 (과제 Step 1 통과 기준)",
+      "demo": "발표 시연에서 그대로 입력할 질문. same_as가 있으면 그 정답 규칙, 없으면 eval/demo_expected.json"
     }
   },
   "questions": [
@@ -24,6 +25,12 @@
     {"id": "N1", "set": "refuse", "dataset": "sample", "question": "부서별 미완료 업무 현황은?"},
     {"id": "N2", "set": "refuse", "dataset": "sample", "question": "상품별 매출은?"},
     {"id": "N3", "set": "refuse", "dataset": "kafe", "question": "연봉이 가장 높은 직원은?"},
-    {"id": "N4", "set": "refuse", "dataset": "kafe", "question": "고객 만족도가 가장 낮은 프로젝트는?"}
+    {"id": "N4", "set": "refuse", "dataset": "kafe", "question": "고객 만족도가 가장 낮은 프로젝트는?"},
+
+    {"id": "D1", "set": "demo", "same_as": "Q2", "dataset": "kafe", "question": "부서별 미완료 업무 현황은?"},
+    {"id": "D2", "set": "demo", "same_as": "Q3", "dataset": "kafe", "question": "계획 대비 실적 MH 초과가 가장 큰 프로젝트는?"},
+    {"id": "D3", "set": "demo", "same_as": "Q4", "dataset": "kafe", "question": "예산 대비 비용 초과율이 가장 높은 프로젝트는?"},
+    {"id": "D4", "set": "demo", "dataset": "kafe", "question": "품질팀에서 기한이 지났는데 완료되지 않은 업무는 몇 건이야?"},
+    {"id": "D5", "set": "demo", "same_as": "Q6", "dataset": "kafe", "question": "담당자나 기한이 비어 있어 확인이 필요한 업무는?"}
   ]
 }

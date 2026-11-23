@@ -6,11 +6,12 @@
     python -m eval.run_eval --set all --md eval_report.md   # 바꿔 말한 질문·답하면 안 되는 질문 포함 + 측정 표
 
 질문 묶음 (--set): core = 평가 질문 Q1~Q7 + S1~S5 (발표용 점수) / paraphrase = 바꿔 말한 질문 /
-refuse = 데이터에 없는 것을 묻는 질문 (숫자 없이 지원 불가·되묻기로 끝나야 정답) / all = 전부
+refuse = 데이터에 없는 것을 묻는 질문 (숫자 없이 지원 불가·되묻기로 끝나야 정답) /
+demo = 발표 시연에서 그대로 입력할 질문 (리허설 전 확인: python -m eval.run_eval --set demo) / all = 전부
 
 정답 격리 (CLAUDE.md):
 - 1단계(run_questions)는 질문 문장과 데이터만 에이전트에 넘긴다. 정답 파일은 이 단계가 끝날 때까지 열지 않는다.
-- 2단계(grade)에서만 tests/fixtures/kafe/evaluation_answers.json과 eval/sample_expected.json을 읽는다.
+- 2단계(grade)에서만 tests/fixtures/kafe/evaluation_answers.json, eval/sample_expected.json, eval/demo_expected.json을 읽는다.
   (질문 문장은 docs/kafe_questions.json·eval/sample_questions.json에서 따로 읽는다)
 - 채점은 결과 표(ToolResult.rows·value)만 본다. LLM이 쓴 문장은 채점하지 않는다.
 
@@ -42,8 +43,9 @@ KAFE_QUESTIONS = ROOT / "docs" / "kafe_questions.json"
 KAFE_ANSWERS = ROOT / "tests" / "fixtures" / "kafe" / "evaluation_answers.json"  # 2단계에서만 연다
 SAMPLE_QUESTIONS = Path(__file__).with_name("sample_questions.json")  # 과제 sample.csv 질문 문장
 SAMPLE_EXPECTED = Path(__file__).with_name("sample_expected.json")  # 그 정답. 2단계에서만 연다
-EXTRA_QUESTIONS = Path(__file__).with_name("extra_questions.json")  # 바꿔 말한 질문·답하면 안 되는 질문 (정답 값 없음)
-SETS = ("core", "paraphrase", "refuse")
+EXTRA_QUESTIONS = Path(__file__).with_name("extra_questions.json")  # 바꿔 말한 질문·답하면 안 되는 질문·시연 질문 (정답 값 없음)
+DEMO_EXPECTED = Path(__file__).with_name("demo_expected.json")  # 시연 질문 중 평가 정답에 없는 것. 2단계에서만 연다
+SETS = ("core", "paraphrase", "refuse", "demo")
 
 KAFE_AS_OF = "2026-11-19"
 SAMPLE_AS_OF = "2026-02-28"  # sample.csv 마지막 달. '전월 대비'의 기준 달이 2026-02가 되게 한다
@@ -224,7 +226,8 @@ def kafe_specs(answers: dict) -> dict[str, list[dict]]:
 
 def grade(runs: list[Run]) -> list[dict]:
     specs = kafe_specs(json.loads(KAFE_ANSWERS.read_text(encoding="utf-8")))
-    specs.update({a["id"]: a["checks"] for a in json.loads(SAMPLE_EXPECTED.read_text(encoding="utf-8"))["answers"]})
+    for path in (SAMPLE_EXPECTED, DEMO_EXPECTED):
+        specs.update({a["id"]: a["checks"] for a in json.loads(path.read_text(encoding="utf-8"))["answers"]})
     report = []
     for run in runs:
         rules = specs.get(run.same_as or run.id, [])
