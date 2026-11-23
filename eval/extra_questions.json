@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "notice": "질문 문장만. 정답 값은 없다 (바꿔 말한 질문은 same_as의 원래 정답 규칙으로, 답하면 안 되는 질문은 '숫자 없이 끝남'으로 채점)",
+    "sets": {
+      "paraphrase": "평가 질문을 사용자가 자기 말로 바꿔 물은 것. 원래 질문과 정답이 같다",
+      "refuse": "데이터에 없는 컬럼·지표를 묻는 질문. 다른 분석을 대신 실행하지 않고 지원 불가·되묻기로 끝나야 정답 (과제 Step 1 통과 기준)"
+    }
+  },
+  "questions": [
+    {"id": "Q1-p1", "set": "paraphrase", "same_as": "Q1", "dataset": "kafe", "question": "마감 지났는데 아직 안 끝난 일 몇 개야?"},
+    {"id": "Q1-p2", "set": "paraphrase", "same_as": "Q1", "dataset": "kafe", "question": "기한을 넘겼는데 완료 안 된 업무 수 알려줘"},
+    {"id": "Q2-p1", "set": "paraphrase", "same_as": "Q2", "dataset": "kafe", "question": "부서마다 안 끝난 업무가 몇 건씩 있어?"},
+    {"id": "Q3-p1", "set": "paraphrase", "same_as": "Q3", "dataset": "kafe", "question": "계획보다 공수가 제일 많이 초과된 프로젝트는?"},
+    {"id": "Q4-p1", "set": "paraphrase", "same_as": "Q4", "dataset": "kafe", "question": "예산보다 돈을 제일 많이 넘게 쓴 프로젝트는?"},
+    {"id": "Q5-p1", "set": "paraphrase", "same_as": "Q5", "dataset": "kafe", "question": "완료 비율이 제일 낮은 프로젝트 알려줘"},
+    {"id": "Q6-p1", "set": "paraphrase", "same_as": "Q6", "dataset": "kafe", "question": "담당자나 기한이 비어 있어서 확인해야 하는 업무 몇 건이야?"},
+    {"id": "Q7-p1", "set": "paraphrase", "same_as": "Q7", "dataset": "kafe", "question": "업무를 제일 많이 맡은 사람은 누구야?"},
+    {"id": "S1-p1", "set": "paraphrase", "same_as": "S1", "dataset": "sample", "question": "매출 총합 얼마야?"},
+    {"id": "S2-p1", "set": "paraphrase", "same_as": "S2", "dataset": "sample", "question": "지역마다 매출 합계 보여줘"},
+    {"id": "S3-p1", "set": "paraphrase", "same_as": "S3", "dataset": "sample", "question": "달마다 매출이 얼마였어?"},
+    {"id": "S4-p1", "set": "paraphrase", "same_as": "S4", "dataset": "sample", "question": "지난달보다 매출이 얼마나 변했고 어느 지역이 줄었어?"},
+    {"id": "S5-p1", "set": "paraphrase", "same_as": "S5", "dataset": "sample", "question": "2026년 1월 매출을 그 전달과 비교해줘"},
+
+    {"id": "N1", "set": "refuse", "dataset": "sample", "question": "부서별 미완료 업무 현황은?"},
+    {"id": "N2", "set": "refuse", "dataset": "sample", "question": "상품별 매출은?"},
+    {"id": "N3", "set": "refuse", "dataset": "kafe", "question": "연봉이 가장 높은 직원은?"},
+    {"id": "N4", "set": "refuse", "dataset": "kafe", "question": "고객 만족도가 가장 낮은 프로젝트는?"}
+  ]
+}

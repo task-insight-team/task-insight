@@ -120,3 +120,83 @@ def test_answers_not_needed_while_agent_runs(datasets, monkeypatch, tmp_path):
     assert [r.status for r in runs] == ["ok", "ok"]
     with pytest.raises(FileNotFoundError):
         ev.grade(runs)
+
+
+# ---------------------------------------------------------------------------
+# 추가 묶음: 바꿔 말한 질문(paraphrase), 답하면 안 되는 질문(refuse), 측정
+# ---------------------------------------------------------------------------
+import json as _json
+
+LIMIT = ("note_limitation", {"reason": "이 데이터에는 해당 정보가 없어 답할 수 없습니다."})
+
+
+def test_question_sets_load():
+    assert len(ev.load_questions()) == 12  # 기본은 발표용 core만
+    allq = ev.load_questions(ev.SETS)
+    assert len(allq) == 12 + sum(1 for q in allq if q.set != "core")
+    extra = [q for q in allq if q.set == "paraphrase"]
+    assert extra and all(q.same_as in RIGHT for q in extra)
+
+
+def test_extra_questions_file_has_no_answers():
+    """추가 질문 파일에는 정답 값이 없다 (정답은 기존 정답 파일 그대로)."""
+    data = _json.loads(ev.EXTRA_QUESTIONS.read_text(encoding="utf-8"))
+    assert all(set(q) <= {"id", "set", "same_as", "dataset", "question"} for q in data["questions"])
+
+
+def test_paraphrase_uses_original_answer(datasets):
+    qs = [q for q in ev.load_questions(("paraphrase",)) if q.same_as in ("Q4", "S4")]
+    right = ev.grade(ev.run_questions(qs, datasets, lambda q: FakeLLM(FakeLLM.calls(RIGHT[q.same_as]))))
+    assert right and all(r["pass"] for r in right)
+    wrong = ev.grade(ev.run_questions(qs[:1], datasets, lambda q: FakeLLM(FakeLLM.calls(
+        ("aggregate", {"op": "count", "group_by": ["프로젝트ID"]})), FakeLLM.calls(
+        ("aggregate", {"op": "count", "group_by": ["프로젝트ID"]})))))
+    assert not wrong[0]["pass"]
+
+
+def refuse_run(datasets, qid, *calls):
+    q = [x for x in ev.load_questions(("refuse",)) if x.id == qid]
+    return ev.grade(ev.run_questions(q, datasets, lambda _: FakeLLM(*[FakeLLM.calls(*c) for c in calls])))[0]
+
+
+def test_refuse_passes_when_agent_declines(datasets):
+    r = refuse_run(datasets, "N1", [LIMIT], [LIMIT])
+    assert r["pass"] and r["calls"] == []
+
+
+def test_refuse_fails_when_agent_runs_another_analysis(datasets):
+    """없는 '부서'를 물었는데 지역별 매출을 대신 계산하면 오답 (2026-11-23 화면 시험에서 실제로 나온 행동)."""
+    other = [LIMIT, ("aggregate", {"op": "sum", "value_column": "sales", "group_by": ["region"]})]
+    r = refuse_run(datasets, "N1", other, other)
+    assert not r["pass"] and "다른 분석" in r["reason"]
+
+
+def test_refuse_fails_on_api_error(datasets):
+    class Down:
+        model = "down"
+
+        def generate(self, *a, **k):
+            raise LLMError("server", "Gemini 서버 오류")
+
+    q = [x for x in ev.load_questions(("refuse",)) if x.id == "N3"]
+    r = ev.grade(ev.run_questions(q, datasets, lambda _: Down()))[0]
+    assert not r["pass"] and r["status"] == "error"
+
+
+def test_llm_calls_are_counted(datasets):
+    """첫 계획이 조건을 놓쳐 재계획하면 LLM 호출 2회로 센다."""
+    q = [x for x in ev.load_questions(("paraphrase",)) if x.id == "Q1-p1"]
+    one = ev.run_questions(q, datasets, lambda _: FakeLLM(FakeLLM.calls(RIGHT["Q1"])))
+    assert one[0].llm_calls == 1
+    q = [x for x in ev.load_questions() if x.id == "Q1"]
+    two = ev.run_questions(q, datasets, lambda _: FakeLLM(
+        FakeLLM.calls(("calculate_completion_rate", {})), FakeLLM.calls(RIGHT["Q1"])))
+    assert two[0].llm_calls == 2
+
+
+def test_summary_markdown(datasets):
+    qs = ev.load_questions() + [x for x in ev.load_questions(("refuse",)) if x.id == "N1"]
+    calls = {**RIGHT, "N1": LIMIT}
+    report = ev.grade(ev.run_questions(qs, datasets, lambda q: FakeLLM(FakeLLM.calls(calls[q.id]), FakeLLM.calls(calls[q.id]))))
+    md = ev.summary_md(report)
+    assert "| core | 12/12 |" in md and "| refuse | 1/1 |" in md and "| N1 |" in md
