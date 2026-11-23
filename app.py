@@ -35,8 +35,35 @@ if ds is None:
     st.error("데이터를 불러오지 못했습니다.")
     st.stop()
 
+MONEY_COLS = ["예산", "실적 인건비", "실적 비인건비", "실적 총비용"]
+EXAMPLES = [  # 클릭하면 질문 입력창을 채워 주는 보조 기능 (직접 입력이 기본)
+    "부서별 미완료 업무 현황은?",
+    "기한이 지난 미완료 업무는 몇 건인가?",
+    "비용 초과율이 가장 큰 프로젝트는?",
+    "완료율이 가장 낮은 프로젝트는?",
+]
+
+
+def show_table(df):
+    """표시용만 정리: 비어 있는 값은 '-', 금액은 천 단위 쉼표. 값 자체는 바꾸지 않는다."""
+    cfg, shown = {}, df.copy()
+    for c in df.columns:
+        if df[c].isna().any():
+            shown[c] = df[c].map(lambda v: "-" if pd.isna(v) else v).astype(str)
+        elif c in MONEY_COLS:
+            cfg[c] = st.column_config.NumberColumn(format="localized")
+    st.dataframe(shown, hide_index=True, column_config=cfg)
+
+
+def md(text: str) -> str:
+    return text.replace("\n", "  \n")  # st.markdown이 줄바꿈을 살리도록
+
+
 as_of = st.text_input("기준일 (YYYY-MM-DD)", "2026-11-19")
-question = st.text_input("질문", placeholder="예: 품질팀에서 마감 넘긴 업무는?")
+question = st.text_input("질문", key="question", placeholder="예: 품질팀에서 마감 넘긴 업무는?")
+st.caption("자유롭게 질문을 입력하세요. 아래 예시를 누르면 입력창에 채워집니다.")
+for col, ex in zip(st.columns(len(EXAMPLES)), EXAMPLES):
+    col.button(ex, key=f"ex_{ex}", on_click=lambda e=ex: st.session_state.update(question=e))
 
 if st.button("분석 계획 만들기", disabled=not question):
     st.session_state["plan_resp"] = create_plan(question, ds, as_of)  # 도구 실행 없음
@@ -55,12 +82,12 @@ if resp is not None:
     elif resp.status == "error":
         st.error(resp.message)
     else:  # clarify / unsupported
-        st.info(resp.message)
+        st.info(md(resp.message))
 
 out = st.session_state.get("exec_resp")
 if out is not None:
     (st.success if out.status == "ok" else st.warning)(out.message)
-    st.write(out.explanation)
+    st.markdown(md(out.explanation))
     for s in out.steps:
         r = s.result  # contracts.ToolResult
         st.markdown(f"**{s.step_id}. {s.purpose}**")
@@ -68,8 +95,8 @@ if out is not None:
             st.error(r.error)  # 오류면 숫자를 보여 주지 않는다
             continue
         df = pd.DataFrame(r.rows)
-        st.dataframe(df, hide_index=True)  # 표
+        show_table(df)  # 표
         y = MAIN_VALUE.get(s.tool) or (df.columns[-1] if s.tool == "aggregate" and len(df.columns) else None)
         if s.chart_type == "bar" and y in df.columns:
-            st.bar_chart(df, x=df.columns[0], y=y)  # 차트 (같은 rows)
+            st.bar_chart(df, x=df.columns[0], y=y, sort=False)  # 차트 (같은 rows, 표와 같은 순서)
         st.caption(f"기준: {r.basis} | 단위: {r.unit} | 사용 행: {r.used_rows}")
