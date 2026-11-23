@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from agent import approve_plan, create_plan, execute_plan
@@ -145,6 +146,34 @@ def show_table(df):
     st.dataframe(shown, hide_index=True, column_config=cfg)
 
 
+def num_label(v) -> str:
+    return "" if pd.isna(v) else f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
+def draw_bar(df: pd.DataFrame, x: str, y: str, title: str, key: str):
+    """막대차트: 표와 같은 rows·같은 순서. 음수는 0선 아래로, 0 기준선을 굵게, 막대 위에 값을 적는다."""
+    vals = pd.to_numeric(df[y], errors="coerce")
+    cats = df[x].astype(str).tolist()
+    fig = go.Figure(go.Bar(x=cats, y=vals, text=vals.map(num_label), textposition="outside", cliponaxis=False))
+    fig.add_hline(y=0, line_width=2, line_color="gray")  # 0 기준선
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=cats, title_text=x)
+    fig.update_yaxes(title_text=y, zeroline=True, zerolinewidth=2, zerolinecolor="gray")  # 값 이름(단위 포함)을 축에 표시
+    fig.update_layout(title_text=title, showlegend=False, margin=dict(t=60, b=40, l=10, r=10))
+    st.plotly_chart(fig, width="stretch", key=key)
+
+
+def mh_note(rows: list[dict]):
+    """MH 초과 분석: 양의 초과분 합계와 실적-계획 순증가는 다른 값이라 함께 구분해 보여 준다 (모두 표의 값으로 계산)."""
+    top = rows[0] if rows else {}
+    need = ("계획MH", "실적MH", "초과MH 합계")
+    if all(isinstance(top.get(k), (int, float)) for k in need):
+        name = next(iter(top.values()))
+        st.info(
+            f"※ **초과MH 합계 {num_label(top['초과MH 합계'])}MH**는 업무별로 계획보다 더 쓴 시간(양의 초과분)만 더한 값입니다. "
+            f"{name}의 **계획 {num_label(top['계획MH'])}MH → 실적 {num_label(top['실적MH'])}MH 순증가 "
+            f"{num_label(top['실적MH'] - top['계획MH'])}MH**(실적−계획)와는 서로 다른 값입니다 (덜 쓴 업무가 있으면 순증가가 더 작습니다).")
+
+
 def md(text: str) -> str:
     return text.replace("\n", "  \n")  # st.markdown이 줄바꿈을 살리도록
 
@@ -206,7 +235,9 @@ if out is not None:
         show_table(df)  # 표
         y = MAIN_VALUE.get(s.tool) or (df.columns[-1] if s.tool == "aggregate" and len(df.columns) else None)
         if s.chart_type == "bar" and y in df.columns:
-            st.bar_chart(df, x=df.columns[0], y=y, sort=False)  # 차트 (같은 rows, 표와 같은 순서)
+            draw_bar(df, df.columns[0], y, f"{s.purpose} — {y}", key=f"chart_{s.step_id}")  # 차트 (같은 rows, 표와 같은 순서)
+        if s.tool == "mh_overrun":
+            mh_note(r.rows)
         st.caption(f"기준: {r.basis} | 단위: {r.unit} | 사용 행: {r.used_rows}")
     with st.expander("실행 기록"):
         st.dataframe(pd.DataFrame([{
