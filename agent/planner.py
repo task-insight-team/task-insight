@@ -13,8 +13,8 @@ from engine import gemini_tool_declarations
 from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
-from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, missing_conditions,
-                         suggest_filters, validate_call)
+from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, plan_missing,
+                         step_scope_missing, suggest_filters, validate_call)
 from agent.llm import GeminiClient, LLMClient, LLMError
 from agent.prompts import AGENT_TOOLS, CLARIFY_TOOL, LIMIT_TOOL, SYSTEM_PROMPT, user_prompt
 from agent.schemas import PlanResponse
@@ -146,7 +146,11 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
 
 
 def _build(reply, vocab, conditions) -> dict:
-    """LLM 응답 → 검증된 단계. 질문 조건이 빠진 단계는 제외하고 uncovered에 기록한다."""
+    """LLM 응답 → 검증된 단계.
+
+    - 단계마다: 질문의 범위 조건(부서·프로젝트·직원·상태·기간)을 종류별로 하나 이상 반영해야 한다 (아니면 제외).
+    - 계획 전체: 모든 조건(지표·기한 초과 포함)을 어느 단계든 반영해야 한다 (아니면 계획 전체를 내보내지 않음).
+    """
     calls = [c for c in reply.calls if isinstance(c, dict) and isinstance(c.get("name"), str)]
     clarify = [c for c in calls if c["name"] == CLARIFY_TOOL]
     limits = [c for c in calls if c["name"] == LIMIT_TOOL]
@@ -165,7 +169,7 @@ def _build(reply, vocab, conditions) -> dict:
         except Rejected as exc:
             rejected.append(str(exc))
             continue
-        lacking = missing_conditions(c["name"], params, conditions, vocab)
+        lacking = step_scope_missing(c["name"], params, conditions, vocab)
         if lacking:
             uncovered += [x for x in lacking if x not in uncovered]
             rejected.append(f"{_purpose(c['name'], params)}: 질문 조건({', '.join(x.label for x in lacking)})이 "
@@ -181,4 +185,10 @@ def _build(reply, vocab, conditions) -> dict:
         notices += [n for n in notes if n not in notices]
         steps.append(PlanStep(id=f"s{len(steps) + 1}", tool=c["name"], params=params,
                               purpose=_purpose(c["name"], params), chart_type=_chart(c["name"], params)))
+    unmet = plan_missing(steps, conditions, vocab) if steps else []
+    if unmet:  # 질문이 요구한 지표·범위를 계획 전체가 다루지 못하면 승인 대상으로 내보내지 않는다
+        uncovered += [x for x in unmet if x not in uncovered]
+        rejected += [f"{s.purpose}: 질문 조건({', '.join(x.label for x in unmet)})을 계획이 다루지 않아 제외했습니다."
+                     for s in steps]
+        steps = []
     return {"steps": steps, "rejected": rejected, "notices": notices, "clarify": clarify, "uncovered": uncovered}

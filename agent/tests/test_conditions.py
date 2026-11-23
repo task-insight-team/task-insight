@@ -141,3 +141,49 @@ def test_retry_prompt_suggests_exact_filters(ds):
     create_plan("품질팀에서 마감 넘긴 업무는?", ds, AS_OF, llm)
     hint = llm.prompts[1]["user"]
     assert '"value": "품질"' in hint and '"op": "!="' in hint and AS_OF in hint
+
+
+# ---------------------------------------------------------------------------
+# 복합 질문: 범위 조건은 단계마다(같은 종류는 하나 이상), 지표·기한 초과는 계획 전체에서 한 번 이상
+# (2026-11-23 QA: 모든 조건을 모든 단계에 강제해 정상 복합 질문이 전부 거부되던 문제)
+# ---------------------------------------------------------------------------
+OPEN = ("상태", "!=", "완료")
+
+
+@pytest.mark.parametrize("question,calls", [
+    ("기한 초과 업무와 MH 초과 프로젝트를 알려줘", [("count_overdue_tasks", {}), ("mh_overrun", {})]),
+    ("비용 초과율과 MH 초과가 큰 프로젝트는?", [("cost_vs_budget", {}), ("mh_overrun", {})]),
+    ("기한 지난 업무랑 예산 초과 프로젝트 보여줘", [("count_overdue_tasks", {}), ("cost_vs_budget", {})]),
+    ("완료율과 비용 초과율이 높은 프로젝트", [("calculate_completion_rate", {"group_by": "프로젝트ID"}), ("cost_vs_budget", {})]),
+    ("P01과 P05의 비용 초과율 비교", [("cost_vs_budget", {"project_id": "P01"}), ("cost_vs_budget", {"project_id": "P05"})]),
+    ("제조 부서와 품질 부서 미완료 업무 비교",
+     [("aggregate", {"op": "count", "filters": F(("부서", "==", "제조"), OPEN)}),
+      ("aggregate", {"op": "count", "filters": F(("부서", "==", "품질"), OPEN)})]),
+])
+def test_compound_questions_are_supported(ds, question, calls):
+    resp = create_plan(question, ds, AS_OF, FakeLLM(FakeLLM.calls(*calls)))
+    assert resp.status == "plan", resp.message
+    assert len(resp.plan.steps) == len(calls)
+    out = execute_plan(ds, resp.plan, approve_plan(resp.plan))
+    assert out.status == "ok"
+
+
+def test_compound_missing_one_metric_is_still_rejected(ds):
+    only_overdue = FakeLLM.calls(("count_overdue_tasks", {}))
+    resp = create_plan("기한 초과 업무와 MH 초과 프로젝트를 알려줘", ds, AS_OF, FakeLLM(only_overdue, only_overdue))
+    assert resp.status == "unsupported" and "MH 초과" in resp.message
+
+
+def test_compound_missing_one_project_is_still_rejected(ds):
+    only_p01 = FakeLLM.calls(("cost_vs_budget", {"project_id": "P01"}))
+    resp = create_plan("P01과 P05의 비용 초과율 비교", ds, AS_OF, FakeLLM(only_p01, only_p01))
+    assert resp.status == "unsupported" and "P05" in resp.message
+
+
+def test_scope_still_applies_to_every_step(ds):
+    """부서가 적힌 질문에서 부서 조건 없는 단계(전사 비용)는 여전히 제외된다."""
+    calls = [("aggregate", {"op": "count", "filters": F(("부서", "==", "품질"), OPEN, ("기한", "<", AS_OF))}),
+             ("cost_vs_budget", {})]
+    resp = create_plan("품질팀 기한 초과 업무와 전체 비용 현황", ds, AS_OF, FakeLLM(FakeLLM.calls(*calls)))
+    assert resp.status == "plan" and [s.tool for s in resp.plan.steps] == ["aggregate"]
+    assert any("제외" in n for n in resp.notices)
