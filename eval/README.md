@@ -19,10 +19,13 @@ python -m eval.run_eval --out eval_result.json # 질문별 도구·인자·판�
 | `core` (기본) | 평가 질문 Q1~Q7 + 과제 sample.csv S1~S5 (12개) | 정답 파일. **발표용 점수는 이 묶음** |
 | `paraphrase` | 같은 질문을 사용자 말투로 바꿔 물은 것 (`eval/extra_questions.json`) | 원래 질문(`same_as`)의 정답 규칙 그대로 |
 | `refuse` | 데이터에 없는 컬럼·지표를 묻는 질문 (예: sample.csv에 "부서별 미완료 업무") | 숫자 없이 지원 불가·되묻기로 끝나야 정답. 다른 분석을 대신 실행하면 오답 (과제 Step 1 "존재하지 않는 컬럼 질문" 기준) |
+| `demo` | **발표 시연에서 그대로 입력할 질문 5개** (D1~D5) | 평가 질문과 같은 계산은 그 정답 규칙, 아니면 `eval/demo_expected.json` (D4 품질팀 기한 초과 8건: 정답 파일 Q1 업무 목록 × 직원 CSV로 계산, 테스트로 확인) |
 
 ```powershell
-python -m eval.run_eval --set all --out eval_all.json --md eval_report.md   # 전부 (Gemini 약 30~40회)
+python -m eval.run_eval --set demo                                          # 리허설 전 시연 질문만 (Gemini 5회)
+python -m eval.run_eval --set all --out eval_all.json --md eval_report.md   # 전부 (Gemini 약 35~45회)
 ```
+시연 문장을 바꾸면 `eval/extra_questions.json`의 D1~D5도 같이 바꿔 둔다.
 `--md`는 제출용 측정 표(묶음별 정답 수, 질문당 시간 평균·최대, LLM 호출 수)와 질문별 결과를 저장합니다.
 LLM 호출 수는 에이전트가 요청한 횟수입니다 (재계획 포함, SDK 내부 재시도 제외).
 

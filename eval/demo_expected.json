@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "notice": "채점 전용. 에이전트·LLM 프롬프트에 넣지 않는다. 시연 질문 중 평가 정답 파일에 없는 것만 여기에 둔다",
+    "source": "D4 = 평가 정답 Q1의 기한 초과 업무 15건(answer_ids) 중 담당자의 부서가 '품질'인 업무 수 (data/kafe/employees.csv 기준). tests/test_eval_grader.py가 정답 파일과 원본 CSV로 다시 계산해 확인한다"
+  },
+  "answers": [
+    {"id": "D4", "checks": [{"type": "value", "equals": 8, "sum_column_has": "기한 초과"}]}
+  ]
+}
