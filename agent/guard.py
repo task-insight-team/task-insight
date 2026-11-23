@@ -310,6 +310,44 @@ def plan_missing(steps: list, conditions: list[Condition], vocab: Vocabulary) ->
     return [c for c in conditions if not any(step_covers(s.tool, s.params, c, vocab) for s in steps)]
 
 
+# 질문에 필요한 정보(개념) → 데이터에 있어야 할 컬럼. 일반 CSV는 컬럼 이름에 힌트가 들어 있으면 있는 것으로 본다.
+# 없으면 다른 컬럼으로 대신 분석하지 않고 LLM 호출 전에 '지원 불가'로 안내한다.
+REQUIRED_CONCEPTS = [
+    ("부서", re.compile(r"부서|팀(?!원)"), ("department", "lead_department"), ("부서", "dept", "department", "team", "팀")),
+    ("업무 상태(완료·미완료)", re.compile(r"미완료|완료율|완수율|완료된|완료 업무|완료한|진행\s?중|미착수|보류"), ("status",),
+     ("상태", "status")),
+    ("기한", re.compile(r"기한|마감|납기|데드라인|지연"), ("due_date",), ("기한", "마감", "지연", "due", "deadline", "delay", "late")),
+    ("담당자·직원", re.compile(r"담당자|직원|사원|인력"), ("assignee_id", "employee_id"),
+     ("담당", "직원", "사원", "employee", "assignee", "staff")),
+    ("프로젝트", re.compile(r"프로젝트"), ("project_id",), ("프로젝트", "project")),
+    ("투입시간(MH)", re.compile(r"MH|공수|투입\s*시간", re.I), ("planned_mh", "actual_mh"), ("mh", "공수", "hour", "시간")),
+    ("예산", re.compile(r"예산"), ("budget",), ("예산", "budget")),
+    ("문제유형", re.compile(r"문제\s*유형|부적합"), ("issue_type",), ("문제", "issue", "유형")),
+]
+
+
+def missing_concepts(question: str, vocab: Vocabulary) -> list[str]:
+    """질문이 요구하는 정보 중 현재 데이터에 해당 컬럼이 없는 것 (예: 매출 CSV에 '부서별 미완료')."""
+    all_cols = {c for cols in vocab.columns.values() for c in cols}
+    lowered = [str(c).lower() for c in all_cols] + [show(c).lower() for c in all_cols]
+    missing = []
+    for label, rx, internal, hints in REQUIRED_CONCEPTS:
+        if not rx.search(question):
+            continue
+        if any(c in all_cols for c in internal):
+            continue
+        if vocab.kind != "standard" and any(h in name for h in hints for name in lowered):
+            continue
+        missing.append(label)
+    return missing
+
+
+def visible_columns(vocab: Vocabulary) -> list[str]:
+    from agent.context import MAX_NAME_LEN, safe_label
+    cols = vocab.columns.get("main", {})
+    return [show(c) for c in cols if safe_label(c, MAX_NAME_LEN) and safe_label(show(c), MAX_NAME_LEN)]
+
+
 def plan_fingerprint(plan: AnalysisPlan) -> str:
     """승인 대상 계획의 지문 (질문·단계·인자·설명 전체)."""
     text = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
