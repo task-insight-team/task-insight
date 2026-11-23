@@ -43,6 +43,16 @@ Source = Union[bytes, str, Path]
 MAX_LISTED_ROWS = 50
 NUMBER_RE = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 
+# 일반 CSV 전용: 흔한 날짜 표기(2026/01/05, 2026.1.5, 2026-01-05 13:45)와 월 표기(2026/01)를 YYYY-MM-DD·YYYY-MM으로 맞춘다.
+# 20260105처럼 구분자 없는 8자리는 일반 숫자와 구분할 수 없어 바꾸지 않는다.
+GENERIC_DATE_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$")
+GENERIC_MONTH_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})$")
+# 일반 CSV 전용: 숫자 앞뒤의 통화·단위 기호 (₩1,200 / 1,200원 / $15 / 12.5%)
+UNIT_RE = re.compile(r"^\s*[₩$]?\s*(.*?)\s*(원|%)?\s*$")
+# 앞자리 0이 있는 코드(우편번호 00123 등)는 숫자로 바꾸지 않는다
+LEADING_ZERO_RE = re.compile(r"^0\d")
+DELIMITERS = [",", ";", "\t", "|"]
+
 
 # ---------------------------------------------------------------------------
 # 결과 묶음
@@ -102,13 +112,26 @@ def _decode(raw: bytes) -> tuple[Optional[str], Optional[str]]:
 
 
 def _detect_kind(columns: list[str]) -> str:
-    """컬럼이 가장 많이 겹치는 표준 표. ID 컬럼이 있고 2개 이상 겹쳐야 인정."""
-    best, best_score = "generic", 1
+    """컬럼이 가장 많이 겹치는 표준 표. ID 컬럼이 있고 그 표 컬럼의 절반 이상이 겹쳐야 인정.
+
+    employee_id·department만 있는 일반 인사 CSV처럼 몇 개만 겹치는 파일은 일반 CSV로 본다.
+    """
+    best, best_score = "generic", 0
     for kind, cols in TABLE_COLUMNS.items():
         score = len(set(columns) & set(cols))
-        if ID_COLUMN[kind] in columns and score > best_score:
+        if ID_COLUMN[kind] in columns and score * 2 >= len(cols) and score > best_score:
             best, best_score = kind, score
     return best
+
+
+def _delimiter(text: str) -> str:
+    """첫 줄에 쉼표가 없으면 세미콜론·탭·세로줄 중 가장 많은 것을 구분자로 쓴다."""
+    header = text.split("\n", 1)[0]
+    if "," in header:
+        return ","
+    counts = {d: header.count(d) for d in DELIMITERS[1:]}
+    best = max(counts, key=counts.get)
+    return best if counts[best] else ","
 
 
 def _dtype(series: pd.Series) -> str:
@@ -160,11 +183,15 @@ def read_table(source: Source, filename: str = "") -> tuple[Optional[pd.DataFram
     if text is None:
         return _fail(filename, "encoding", "글자 인코딩을 읽을 수 없습니다. UTF-8 또는 CP949(엑셀 기본) CSV만 지원합니다.")
     try:
-        df = pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False, skipinitialspace=True)
+        df = pd.read_csv(io.StringIO(text), sep=_delimiter(text), dtype=str, keep_default_na=False,
+                         skipinitialspace=True)
     except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
         return _fail(filename, "parse_error", f"CSV 형식을 읽을 수 없습니다: {exc}", encoding)
 
     df.columns = [str(c).strip() for c in df.columns]
+    # 줄 끝 쉼표 때문에 생긴 이름 없는 빈 컬럼은 버린다 (값이 하나라도 있으면 남긴다)
+    empty_unnamed = [c for c in df.columns if c.startswith("Unnamed:") and (df[c].str.strip() == "").all()]
+    df = df.drop(columns=empty_unnamed)
     if len(df) == 0:
         return _fail(filename, "no_rows", "헤더만 있고 데이터 행이 없습니다.", encoding)
     if len(df) > MAX_ROWS:
@@ -260,10 +287,55 @@ def _validate_generic(df: pd.DataFrame, filename: str, encoding: Optional[str]):
         nonnull = df[col].dropna()
         if nonnull.empty:
             continue
-        if nonnull.str.replace(",", "", regex=False).str.match(NUMBER_RE).mean() >= 0.5:
+        if _normalize_dates(df, col, nonnull, issues):
+            continue
+        if nonnull.str.match(LEADING_ZERO_RE).any() and not nonnull.str.contains(".", regex=False).any():
+            continue  # 00123 같은 코드는 글자로 둔다
+        stripped = nonnull.str.extract(UNIT_RE, expand=True)
+        numbers = stripped[0].str.replace(",", "", regex=False)
+        if numbers.str.match(NUMBER_RE).mean() >= 0.5:
+            units = sorted(set(stripped[1].dropna()) | ({"₩"} if nonnull.str.contains("₩").any() else set())
+                           | ({"$"} if nonnull.str.contains("$", regex=False).any() else set()))
+            if units:
+                df[col] = df[col].str.extract(UNIT_RE, expand=True)[0].where(df[col].notna())
+                issues.append(Issue(level="info", code="unit_removed",
+                                    message=f"'{col}'의 단위 기호({', '.join(units)})를 빼고 숫자로 읽었습니다.",
+                                    count=int(nonnull.str.contains(r"[₩$원%]").sum())))
             _to_number(df, col, issues, allow_negative=True)
     issues.extend(_duplicate_issues(df, None))
     return df, _report(df, filename, "generic", encoding, issues)
+
+
+def _normalize_dates(df: pd.DataFrame, col: str, nonnull: pd.Series, issues: list[Issue]) -> bool:
+    """값 절반 이상이 날짜·월 표기면 YYYY-MM-DD(또는 YYYY-MM) 글자로 맞춘다. 바꿨으면 True."""
+    def plausible(year: pd.Series, mon: pd.Series) -> pd.Series:
+        return (year.astype("Float64").between(1900, 2100) & mon.astype("Float64").between(1, 12)).fillna(False).astype(bool)
+
+    day = nonnull.str.extract(GENERIC_DATE_RE)
+    month = nonnull.str.extract(GENERIC_MONTH_RE)
+    day_iso = day[0] + "-" + day[1].str.zfill(2) + "-" + day[2].str.zfill(2)
+    day_ok = pd.to_datetime(day_iso, format=DATE_FORMAT, errors="coerce").notna() & plausible(day[0], day[1])
+    month_ok = plausible(month[0], month[1])
+    if day_ok.mean() >= 0.5:
+        iso, good, label = day_iso, day_ok, "YYYY-MM-DD"
+    elif month_ok.mean() >= 0.5:  # 1500.50 같은 소수는 월 범위(1~12)를 벗어나 여기서 걸러진다
+        iso, good, label = month[0] + "-" + month[1].str.zfill(2), month_ok, "YYYY-MM"
+    else:
+        return False
+    good = good.astype(bool)
+    changed = int((good & (iso != nonnull)).sum())
+    bad = nonnull.index[~good]
+    df.loc[good[good].index, col] = iso[good]
+    if changed:
+        issues.append(Issue(level="info", code="date_normalized",
+                            message=f"'{col}' 날짜 표기를 {label} 형식으로 맞췄습니다.",
+                            count=changed))
+    if len(bad):
+        mask = df.index.isin(bad)
+        issues.append(_issue("warning", "invalid_date", f"'{col}'에 날짜로 읽을 수 없는 값이 있습니다. 해당 행은 계산에서 제외합니다.",
+                             pd.Series(mask, index=df.index), df))
+        df.loc[mask, "_invalid"] = True
+    return True
 
 
 def _duplicate_issues(df: pd.DataFrame, id_col: Optional[str]) -> list[Issue]:
