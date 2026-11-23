@@ -13,7 +13,8 @@ from engine import gemini_tool_declarations
 from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
-from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, missing_concepts, plan_missing,
+from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, generic_mismatch,
+                         missing_concepts, plan_missing, question_columns,
                          visible_columns,
                          step_scope_missing, suggest_filters, validate_call)
 from agent.llm import GeminiClient, LLMClient, LLMError
@@ -98,6 +99,18 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
         return PlanResponse(status="unsupported", question=question, as_of=as_of, rejected=[f"필요한 정보 없음: {', '.join(lacking)}"],
                             message=(f"현재 데이터에는 {cols} 컬럼만 있어 '{', '.join(lacking)}' 정보가 필요한 분석을 할 수 없습니다. "
                                      "다른 분석으로 대신하지 않습니다. 해당 컬럼이 있는 데이터를 올리거나 질문을 바꿔 주세요."))
+    qc = question_columns(question, vocab)
+    cols_text = ", ".join(visible_columns(vocab)) or "(표시할 수 있는 컬럼 없음)"
+    if qc.missing_terms:  # 질문이 요구한 정보(고객·상품·연봉 등)의 컬럼이 없음 → 다른 컬럼으로 대신하지 않음
+        return PlanResponse(status="unsupported", question=question, as_of=as_of,
+                            rejected=[f"필요한 정보 없음: {', '.join(qc.missing_terms)}"],
+                            message=(f"현재 데이터에는 '{', '.join(qc.missing_terms)}' 정보(컬럼)가 없어 이 분석을 할 수 없습니다. "
+                                     f"사용할 수 있는 컬럼: {cols_text}. 다른 분석으로 대신하지 않습니다."))
+    if qc.unknown_groups:  # 'X별'의 X가 어느 컬럼인지 확실하지 않음 → 추측하지 않고 되묻기
+        return PlanResponse(status="clarify", question=question, as_of=as_of,
+                            rejected=[f"집계 기준 불명확: {', '.join(qc.unknown_groups)}"],
+                            message=(f"'{', '.join(qc.unknown_groups)}' 기준에 해당하는 컬럼을 찾을 수 없습니다. "
+                                     f"사용할 수 있는 컬럼({cols_text}) 중 어느 것으로 나눌지 알려 주세요."))
     conditions = extract_conditions(question, vocab)
     base_prompt = user_prompt(render_context(ds, vocab), question)
     try:
@@ -109,7 +122,7 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
         return _fail(question, as_of, LLMError.MESSAGES["unknown"], getattr(llm, "model", "") if llm else "")
     model = getattr(llm, "model", "")
 
-    built = _build(reply, vocab, conditions)
+    built = _build(reply, vocab, conditions, qc)
     if built["uncovered"]:
         # 질문 조건이 빠진 단계가 있으면 이유를 알려 주고 1번만 다시 계획하게 한다
         labels = ", ".join(c.label for c in built["uncovered"])
@@ -119,7 +132,7 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
                     f"{scope_note()} "
                     "조건을 반영할 수 있는 도구가 없으면 전체 결과를 내지 말고 note_limitation으로 이유를 밝혀라.")
         try:
-            retry = _build(llm.generate(SYSTEM_PROMPT, feedback, gemini_tool_declarations() + AGENT_TOOLS), vocab, conditions)
+            retry = _build(llm.generate(SYSTEM_PROMPT, feedback, gemini_tool_declarations() + AGENT_TOOLS), vocab, conditions, qc)
             if retry["steps"] or not built["steps"]:
                 built = retry
         except Exception:  # noqa: BLE001 - 재시도 실패 시 첫 결과(조건 누락 단계는 이미 제외됨)를 쓴다
@@ -158,7 +171,7 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
     return _fail(question, as_of, "AI가 분석 계획을 만들지 못했습니다. 질문을 바꿔 다시 시도해 주세요. " + SUPPORTED_HINT, model)
 
 
-def _build(reply, vocab, conditions) -> dict:
+def _build(reply, vocab, conditions, qc=None) -> dict:
     """LLM 응답 → 검증된 단계.
 
     - 단계마다: 질문의 범위 조건(부서·프로젝트·직원·상태·기간)을 종류별로 하나 이상 반영해야 한다 (아니면 제외).
@@ -181,6 +194,10 @@ def _build(reply, vocab, conditions) -> dict:
             params, notes = validate_call(c["name"], c.get("args") or {}, vocab)
         except Rejected as exc:
             rejected.append(str(exc))
+            continue
+        mismatch = generic_mismatch(c["name"], params, qc, vocab) if qc is not None else []
+        if mismatch:  # 질문에 없는 컬럼으로 조용히 바꾼 계획은 실행 가능한 계획으로 내보내지 않는다
+            rejected.append(f"{_purpose(c['name'], params)}: " + "; ".join(mismatch))
             continue
         lacking = step_scope_missing(c["name"], params, conditions, vocab)
         if lacking:

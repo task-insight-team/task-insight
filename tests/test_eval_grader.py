@@ -182,16 +182,34 @@ def test_refuse_fails_when_agent_runs_another_analysis(datasets):
     assert not failed.ok and ev.grade([ok_run])[0]["pass"]
 
 
-def test_refuse_fails_on_api_error(datasets):
+def test_refuse_question_is_blocked_before_llm(datasets):
+    """데이터에 없는 지표(연봉)는 LLM 호출 전에 차단 → 거절형 정답."""
     class Down:
         model = "down"
 
         def generate(self, *a, **k):
-            raise LLMError("server", "Gemini 서버 오류")
+            raise LLMError("server", "호출되면 안 됨")
 
     q = [x for x in ev.load_questions(("refuse",)) if x.id == "N3"]
-    r = ev.grade(ev.run_questions(q, datasets, lambda _: Down()))[0]
-    assert not r["pass"] and r["status"] == "error"
+    runs = ev.run_questions(q, datasets, lambda *a: Down())
+    r = ev.grade(runs)[0]
+
+    assert runs[0].llm_calls == 0
+    assert r["status"] == "unsupported"
+    assert r["pass"]
+
+
+def test_refuse_api_error_is_not_pass():
+    """거절형 질문에서 API 오류가 발생했다면 정답으로 채점하지 않는다."""
+    run = ev.Run(
+        "N3",
+        "연봉이 가장 높은 직원은?",
+        "error",
+        "Gemini 서버 오류",
+        set="refuse",
+        stage="plan",
+    )
+    assert not ev.grade([run])[0]["pass"]
 
 
 def test_llm_calls_are_counted(datasets):
