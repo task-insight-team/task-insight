@@ -47,7 +47,7 @@ python -m agent "비용 초과율이 가장 큰 프로젝트는?" --yes
 ## 테스트
 
 ```bash
-pytest agent/tests          # 오프라인 (FakeLLM). 키가 있으면 test_live_gemini도 실행
-pytest tests agent/tests    # 전체
+pytest                                   # 전체 (tests + agent/tests). 실제 Gemini 테스트는 건너뜀
+$env:RUN_LIVE_GEMINI="1"; pytest agent/tests/test_live_gemini.py -v   # 실제 Gemini (키 필요, 10~20회 호출)
 ```
-`pytest.ini`의 `testpaths`가 `tests`뿐이라 `pytest`만 치면 agent 테스트는 돌지 않는다 (통합 담당과 협의 필요).
+실제 API 테스트는 무료 호출 한도를 아끼기 위해 `RUN_LIVE_GEMINI=1`일 때만 실행한다 (키만 있어서는 실행하지 않음).

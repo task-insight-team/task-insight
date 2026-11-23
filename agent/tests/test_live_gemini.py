@@ -1,6 +1,7 @@
-"""실제 Gemini API 통합 테스트. GEMINI_API_KEY가 없으면 건너뛴다 (CI는 키 없이 통과).
+"""실제 Gemini API 통합 테스트. 무료 호출 한도를 아끼기 위해 명시적으로 켰을 때만 실행한다.
 
-    $env:GEMINI_API_KEY="..."; pytest agent/tests/test_live_gemini.py -v
+실행 조건: GEMINI_API_KEY가 있고 RUN_LIVE_GEMINI=1 (둘 중 하나라도 없으면 건너뜀, CI는 그대로 통과)
+    $env:RUN_LIVE_GEMINI="1"; pytest agent/tests/test_live_gemini.py -v      # 약 10~20회 호출
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ import pytest
 from agent import approve_plan, create_plan, execute_plan
 from agent.tests.helpers import AS_OF, REPRESENTATIVE, UNSUPPORTED, kafe_dataset
 
-pytestmark = pytest.mark.skipif(not os.environ.get("GEMINI_API_KEY"), reason="GEMINI_API_KEY 없음 (실제 API 테스트 생략)")
+LIVE = os.environ.get("RUN_LIVE_GEMINI") == "1" and bool(os.environ.get("GEMINI_API_KEY"))
+pytestmark = pytest.mark.skipif(not LIVE, reason="실제 Gemini 테스트는 RUN_LIVE_GEMINI=1 과 GEMINI_API_KEY가 있을 때만 실행")
 
 
 @pytest.fixture(scope="module")

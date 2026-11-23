@@ -32,45 +32,82 @@ execute_plan(ds: Dataset, plan: AnalysisPlan, approval: PlanApproval) -> Executi
 - `llm`: 생략하면 Gemini (`GEMINI_API_KEY` 환경변수 또는 `st.secrets`). 테스트는 `FakeLLM`.
 - 세 함수 모두 예외를 던지지 않는다. 실패는 `status`와 `message`로 온다.
 
-## 3. Streamlit 예시
+## 3. Streamlit 예시 (그대로 실행되는 최소 예시)
+
+레포 루트에서 이 코드를 파일로 저장해 `streamlit run <파일>`로 실행하면 kafe 데이터로 계획 → 승인 → 결과가 동작한다.
+2026-11-23 main 기준으로 실제 Gemini와 Streamlit 헤드리스 테스트(되묻기·지원 불가·API 오류·단계 오류 포함)로 확인했다.
+업로드 화면이 생기면 `load_kafe()` 대신 `engine.load_dataset({f.name: f.getvalue() for f in uploaded}).dataset`를 쓴다.
 
 ```python
+from pathlib import Path
+
+import pandas as pd
 import streamlit as st
-from agent import create_plan, approve_plan, execute_plan
 
-as_of = st.text_input("기준일", "2026-11-19")
-question = st.text_input("질문")
+from agent import approve_plan, create_plan, execute_plan
+from engine import load_dataset
 
-if st.button("분석 계획 만들기") and question:
-    st.session_state.plan_resp = create_plan(question, ds, as_of)
+# 차트 주 값 컬럼 (agent/FRONTEND.md 표와 같음)
+MAIN_VALUE = {
+    "count_overdue_tasks": "기한 초과(건)", "summarize_by_category": "미완료(건)",
+    "calculate_completion_rate": "완료율(%)", "mh_overrun": "초과MH 합계",
+    "cost_vs_budget": "비용 초과율(%)", "find_recurring_issues": "발생(건)",
+}
+
+
+@st.cache_resource
+def load_kafe():
+    folder = Path("data/kafe")
+    res = load_dataset({f"{n}.csv": folder / f"{n}.csv" for n in ("tasks", "employees", "projects")})
+    return res.dataset if res.ok else None
+
+
+ds = load_kafe()
+if ds is None:
+    st.error("데이터를 불러오지 못했습니다.")
+    st.stop()
+
+as_of = st.text_input("기준일 (YYYY-MM-DD)", "2026-11-19")
+question = st.text_input("질문", placeholder="예: 품질팀에서 마감 넘긴 업무는?")
+
+if st.button("분석 계획 만들기", disabled=not question):
+    st.session_state["plan_resp"] = create_plan(question, ds, as_of)   # 도구 실행 없음
     st.session_state.pop("exec_resp", None)
 
 resp = st.session_state.get("plan_resp")
-if resp:
+if resp is not None:
     if resp.status == "plan":
-        st.write(resp.plan.summary)                       # '※'로 시작하는 줄 = 한계·제외 안내
+        st.subheader("분석 계획")
+        for line in resp.plan.summary.splitlines():
+            (st.warning if line.startswith("※") else st.write)(line)   # ※ = 한계·제외 안내 (꼭 표시)
         for s in resp.plan.steps:
-            st.write(f"{s.id}. {s.purpose}  (도구: {s.tool})")
+            st.write(f"{s.id}. {s.purpose} (도구: {s.tool})")
         if st.button("승인하고 실행"):
-            st.session_state.exec_resp = execute_plan(ds, resp.plan, approve_plan(resp.plan))
+            st.session_state["exec_resp"] = execute_plan(ds, resp.plan, approve_plan(resp.plan))
     elif resp.status == "error":
         st.error(resp.message)
-    else:                                                 # clarify / unsupported
+    else:  # clarify / unsupported
         st.info(resp.message)
 
 out = st.session_state.get("exec_resp")
-if out:
+if out is not None:
+    (st.success if out.status == "ok" else st.warning)(out.message)
     st.write(out.explanation)
     for s in out.steps:
-        r = s.result                                      # ToolResult (contracts.py)
+        r = s.result                                   # contracts.ToolResult
+        st.markdown(f"**{s.step_id}. {s.purpose}**")
         if not r.ok:
-            st.warning(r.error)                           # 오류면 숫자를 보여 주지 않는다
+            st.error(r.error)                          # 오류면 숫자를 보여 주지 않는다
             continue
         df = pd.DataFrame(r.rows)
-        st.dataframe(df)                                  # 표
-        # 차트도 같은 df로 (차트 값 = 표 값). x축 = 첫 컬럼, chart_type = s.chart_type
-        st.caption(f"기준: {r.basis} / 단위: {r.unit}")
+        st.dataframe(df, hide_index=True)              # 표
+        y = MAIN_VALUE.get(s.tool) or (df.columns[-1] if s.tool == "aggregate" else None)
+        if s.chart_type == "bar" and y in df.columns:
+            st.bar_chart(df, x=df.columns[0], y=y)     # 차트 (같은 rows)
+        st.caption(f"기준: {r.basis} | 단위: {r.unit} | 사용 행: {r.used_rows}")
 ```
+
+- 금액 컬럼(`예산`, `실적 총비용` 등)은 그대로 두면 `88000000`처럼 보인다. 표시할 때 천 단위 쉼표를 넣는다 (예: `st.dataframe(df, column_config={"예산": st.column_config.NumberColumn(format="localized")})`). 값 자체는 바꾸지 않는다 (차트 값 = 표 값).
 
 ## 4. 반환 형식
 
@@ -192,8 +229,9 @@ if out:
 ### 조건을 반영할 수 없음 (`"연구팀 직원별 완료율은?"`: 완료율 도구는 부서 조건을 받지 못함)
 ```json
 {"status": "unsupported", "plan": null,
- "message": "... 부서별 필터를 지원하지 않습니다 ..."}
+ "message": "질문의 조건(부서 = 연구)을 반영해 계산할 수 있는 분석을 만들지 못했습니다. 조건을 뺀 전체 결과는 임의로 보여 드리지 않습니다. ..."}
 ```
+`unsupported` 메시지는 위처럼 코드가 만든 고정 문구일 수도 있고, Gemini가 쓴 한계 설명(숫자 없는 문장, 예: "…도구는 부서별 필터를 지원하지 않습니다")일 수도 있다. 둘 다 그대로 표시하면 된다.
 질문에 적힌 부서·프로젝트·직원·상태·기한 초과·기간·지표 조건이 계획에 반영되지 않으면, 전체 결과로 대신 답하지 않는다.
 
 ### API 오류
