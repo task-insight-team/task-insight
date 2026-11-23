@@ -49,6 +49,8 @@ def _purpose(tool: str, p: dict) -> str:
     groups = groups if isinstance(groups, list) else ([groups] if groups else [])
     if groups:
         text += f" ({'·'.join(show(g) for g in groups)}별)"
+    if p.get("department"):  # 범위 인자를 승인 전 계획에서도 보이게 (결과 설명의 [부서 X]와 같은 정보)
+        text += f" (부서 {p['department']})"
     if p.get("project_id"):
         text += f" (프로젝트 {p['project_id']})"
     for f in p.get("filters") or []:
