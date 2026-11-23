@@ -416,7 +416,10 @@ def load_dataset(files: dict[str, Source], drop_duplicates: bool = False) -> Loa
         return fail("no_files", "분석할 파일이 없습니다.")
     for kind, dfs in tables.items():
         if len(dfs) > 1:
-            return fail("duplicate_kind", f"같은 종류({kind}) 파일이 {len(dfs)}개입니다. 종류마다 하나씩만 올려 주세요.")
+            names = ", ".join(r.filename for r in reports if r.ok and r.kind == kind)
+            if kind == "generic":
+                return fail("duplicate_kind", f"일반 CSV는 한 번에 하나만 분석할 수 있습니다 ({names}). 하나만 올려 주세요.")
+            return fail("duplicate_kind", f"{KIND_LABEL[kind]} 파일이 {len(dfs)}개입니다 ({names}). 종류마다 하나씩만 올려 주세요.")
 
     one = {k: v[0] for k, v in tables.items()}
     if "generic" in one:
