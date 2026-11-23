@@ -1,6 +1,6 @@
 """Task Insight 화면: 계획 -> 승인 -> 결과.
 
-* kafe 데이터를 한 번만 불러온다 (업로드 화면이 생기면 engine.load_dataset(files)로 교체).
+* 예시(kafe) 데이터 또는 사용자가 올린 CSV를 engine.load_dataset으로 검증·결합한다.
 * 승인 전에는 분석 도구가 실행되지 않는다.
 * 표와 차트는 같은 ToolResult.rows로 그린다.
 """
@@ -23,17 +23,68 @@ st.set_page_config(page_title="Task Insight", layout="wide")
 st.title("Task Insight")
 
 
-@st.cache_resource
-def load_kafe():
-    folder = Path(__file__).parent / "data" / "kafe"
-    res = load_dataset({f"{n}.csv": folder / f"{n}.csv" for n in ("tasks", "employees", "projects")})
-    return res.dataset if res.ok else None
+KAFE_DIR = Path(__file__).parent / "data" / "kafe"
+KIND_NAMES = {"tasks": "업무", "employees": "직원", "projects": "프로젝트", "generic": "일반 CSV"}
+SHOW_LEVEL = {"error": st.error, "warning": st.warning, "info": st.info}
 
 
-ds = load_kafe()
-if ds is None:
-    st.error("데이터를 불러오지 못했습니다.")
+@st.cache_resource(show_spinner="파일을 검사하는 중...")
+def load_files(files: tuple, drop_duplicates: bool):
+    """files = ((파일이름, bytes), ...). 같은 파일이면 다시 검사하지 않는다. 검증·결합은 engine이 한다."""
+    return load_dataset(dict(files), drop_duplicates=drop_duplicates)
+
+
+def issue_text(i) -> str:
+    text = i.message
+    if i.rows:
+        shown = ", ".join(str(r) for r in i.rows[:10])
+        text += f" (행 {shown}{' 외' if i.count > 10 or len(i.rows) > 10 else ''})"
+    return text
+
+
+def show_load_report(res):
+    """파일별 검증 결과를 보여 준다. 문제가 있으면 펼쳐서 사유를 바로 보여 준다."""
+    for r in res.reports:
+        warn = sum(i.level == "warning" for i in r.issues)
+        mark = "❌" if not r.ok else ("⚠️" if warn else "✅")
+        label = f"{mark} {r.filename} · {KIND_NAMES.get(r.kind, r.kind)} · {r.n_rows:,}행 {r.n_cols}열"
+        with st.expander(label + (f" · 확인 필요 {warn}건" if warn else ""), expanded=(not r.ok or warn > 0)):
+            if not r.issues:
+                st.write("문제가 발견되지 않았습니다.")
+            for i in r.issues:
+                SHOW_LEVEL[i.level](issue_text(i))
+    for i in res.errors + (res.join.issues if res.join else []):
+        SHOW_LEVEL[i.level](issue_text(i))
+
+
+st.subheader("1. 데이터")
+source = st.radio("분석할 데이터", ["예시 데이터 (kafe)", "내 CSV 올리기"], horizontal=True)
+if source.startswith("예시"):
+    files = tuple((f"{n}.csv", (KAFE_DIR / f"{n}.csv").read_bytes()) for n in ("tasks", "employees", "projects"))
+else:
+    uploads = st.file_uploader(
+        "CSV 파일을 올려 주세요 (업무·직원·프로젝트 파일 각 1개, 또는 일반 CSV 1개 / 파일당 10MB 이하)",
+        type="csv", accept_multiple_files=True)
+    if not uploads:
+        st.info("분석할 CSV 파일을 올려 주세요. 업무 파일만 올려도 분석할 수 있어요 (부서별 분석은 직원 파일, 예산 분석은 세 파일이 모두 필요).")
+        st.stop()
+    files = tuple((u.name, u.getvalue()) for u in uploads)
+drop_dup = st.checkbox("완전히 같은 중복 행은 제거하고 분석", value=False)
+
+load_res = load_files(files, drop_dup)
+show_load_report(load_res)
+if not load_res.ok:
+    st.error("데이터를 불러오지 못했습니다. 위 안내대로 파일을 고쳐서 다시 올려 주세요.")
     st.stop()
+ds = load_res.dataset
+
+data_key = (files, drop_dup)  # 데이터가 바뀌면 이전 계획·결과를 지운다
+if st.session_state.get("data_key") != data_key:
+    st.session_state["data_key"] = data_key
+    st.session_state.pop("plan_resp", None)
+    st.session_state.pop("exec_resp", None)
+
+st.subheader("2. 질문")
 
 MONEY_COLS = ["예산", "실적 인건비", "실적 비인건비", "실적 총비용"]
 EXAMPLES = [  # 클릭하면 질문 입력창을 채워 주는 보조 기능 (직접 입력이 기본)
