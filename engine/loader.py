@@ -57,6 +57,11 @@ DELIMITERS = [",", ";", "\t", "|"]
 # ---------------------------------------------------------------------------
 # 결과 묶음
 # ---------------------------------------------------------------------------
+# Dataset 구조 버전. load_dataset·build_dataset가 만드는 표 구조(파생 컬럼, 결합 방식, 컬럼 형식)를 바꾸면 1 올린다.
+# run_tool은 버전이 다른 Dataset(예: 앱 업데이트 전에 불러와 캐시에 남은 데이터)으로는 계산하지 않는다.
+DATASET_VERSION = 1
+
+
 @dataclass
 class Dataset:
     """분석 대상. main은 결합된 업무 표(standard) 또는 일반 CSV(generic)."""
@@ -64,6 +69,7 @@ class Dataset:
     main: pd.DataFrame
     employees: Optional[pd.DataFrame] = None
     projects: Optional[pd.DataFrame] = None
+    version: int = DATASET_VERSION  # 이 데이터를 만든 엔진의 구조 버전
 
     @classmethod
     def generic(cls, df: pd.DataFrame) -> "Dataset":

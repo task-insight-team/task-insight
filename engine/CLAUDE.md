@@ -42,6 +42,7 @@ config = types.GenerateContentConfig(tools=[tool])
 - 자유 텍스트(업무명·프로젝트명)는 결과 rows에 넣지 않는다.
 - 날짜 계산에 오늘 날짜를 쓰지 않는다. 기준일은 입력으로 받는다.
 - 원본 DataFrame을 수정하지 않는다.
+- `load_dataset`·`build_dataset`가 만드는 표 구조(파생 컬럼, 결합 방식, 컬럼 형식)를 바꾸면 `engine/loader.py`의 `DATASET_VERSION`을 1 올린다. `run_tool`은 버전이 다른 Dataset(앱 업데이트 전에 불러와 캐시에 남은 데이터 등)으로는 계산하지 않고 "다시 불러와 주세요"를 돌려준다. Dataset 여부는 클래스가 아니라 속성으로 판단한다 (배포 중 모듈 재로드 대응).
 - 새 도구 추가: `contracts.py`에 Params 모델(팀 합의) → `tools.py` 함수 → `registry.TOOLS` 등록 → `docs/data_rules.md`와 테스트 추가.
 
 ## 테스트
