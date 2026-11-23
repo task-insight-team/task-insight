@@ -85,3 +85,40 @@ def test_cp949_korean_headers():
     res = load("지역,매출\n서울,100\n부산,50\n", encoding="cp949")
     r = run_tool(res.dataset, "aggregate", {"op": "sum", "value_column": "매출", "group_by": ["지역"]})
     assert r.ok and r.value == 150
+
+
+# ---------------------------------------------------------------------------
+# 집계 최댓값·최솟값 (op = max / min)
+# ---------------------------------------------------------------------------
+INV = "품목,분류,단가\nA,부품,3200\nB,부품,9800\nC,원자재,850\nD,원자재,1500\nE,완제품,48000\n"
+
+
+def test_max_min_total_and_grouped():
+    ds = load(INV).dataset
+    assert run_tool(ds, "aggregate", {"op": "max", "value_column": "단가"}).value == 48000
+    assert run_tool(ds, "aggregate", {"op": "min", "value_column": "단가"}).value == 850
+    r = run_tool(ds, "aggregate", {"op": "max", "value_column": "단가", "group_by": ["분류"], "sort": "value_desc"})
+    assert r.ok and r.rows[0] == {"분류": "완제품", "최댓값(단가)": 48000.0}
+    assert {x["분류"]: x["최댓값(단가)"] for x in r.rows} == {"완제품": 48000, "부품": 9800, "원자재": 1500}
+    assert "최댓값 기준" in r.basis
+
+
+def test_max_min_need_numeric_value_column():
+    ds = load(INV).dataset
+    assert "값 컬럼" in run_tool(ds, "aggregate", {"op": "max"}).error
+    assert "숫자 컬럼이 아니" in run_tool(ds, "aggregate", {"op": "min", "value_column": "품목"}).error
+
+
+def test_max_min_on_zero_rows_is_not_computable():
+    ds = load(INV).dataset
+    r = run_tool(ds, "aggregate", {"op": "max", "value_column": "단가",
+                                   "filters": [{"column": "단가", "op": ">", "value": "100000"}]})
+    assert not r.ok and "0건이라 최댓값" in r.error
+
+
+def test_max_min_on_kafe(kafe):
+    """업무 데이터에서도 같은 방식 (예: 프로젝트별 가장 큰 실적MH 업무)."""
+    import pandas as pd
+    r = run_tool(kafe, "aggregate", {"op": "max", "value_column": "실적MH", "group_by": ["프로젝트ID"]})
+    expect = pd.to_numeric(kafe.main.loc[~kafe.main["_invalid"], "actual_mh"]).groupby(kafe.main["project_id"]).max()
+    assert r.ok and {x["프로젝트ID"]: x["최댓값(실적MH)"] for x in r.rows} == expect.to_dict()

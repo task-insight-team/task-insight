@@ -465,3 +465,9 @@ def test_holdout_limit_honest_refusal_passes(datasets, qid):
     q = [x for x in ev.load_questions(("holdout",)) if x.id == qid]
     r = ev.grade(ev.run_questions(q, datasets, lambda _: FakeLLM(FakeLLM.calls(LIMIT), FakeLLM.calls(LIMIT))))[0]
     assert r["pass"] and r["outcome"] == "정직한 거절"
+
+
+def test_holdout_h09_answerable_with_max(datasets):
+    """집계 max(최댓값) 추가로 '분류별 최고 단가'(H09)는 엔진으로 정답을 낼 수 있다 (이전에는 한계 질문)."""
+    r = holdout_engine_runs(datasets, {"H09": [("aggregate", {"op": "max", "value_column": "단가", "group_by": ["분류"]})]})
+    assert r["H09"]["pass"] and r["H09"]["outcome"] == "정답"

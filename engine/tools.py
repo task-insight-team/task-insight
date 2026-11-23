@@ -41,7 +41,7 @@ from engine.loader import Dataset
 
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-OP_LABEL = {"sum": "합계", "mean": "평균", "count": "개수"}
+OP_LABEL = {"sum": "합계", "mean": "평균", "count": "개수", "max": "최댓값", "min": "최솟값"}
 _TO_INTERNAL = {v: k for k, v in DISPLAY_NAMES.items()}
 NEEDS_STANDARD = "업무(tasks) 파일이 있어야 쓸 수 있는 도구입니다."
 
@@ -195,7 +195,7 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
     data = _base(df)
 
     value_col = None
-    if p.op in ("sum", "mean"):
+    if p.op != "count":  # 합계·평균·최댓값·최솟값은 숫자 값 컬럼이 필요
         if not p.value_column:
             return _err(tool, p, f"{OP_LABEL[p.op]}을 구하려면 값 컬럼(value_column)이 필요합니다.")
         value_col = _resolve(data, p.value_column)
@@ -253,8 +253,8 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
     label = f"{OP_LABEL[p.op]}({_show(value_col)})" if value_col else "개수(건)"
     if data.empty:  # 대상은 맞는데 조건에 맞는 행이 0개
         cond = f" (조건: {' / '.join(desc)})" if desc else ""
-        if p.op == "mean":
-            return _err(tool, p, f"조건에 맞는 데이터가 0건이라 평균을 계산할 수 없습니다{cond}.")
+        if p.op in ("mean", "max", "min"):  # 0건이면 평균·최댓값·최솟값은 정의되지 않음 (합계·개수는 0)
+            return _err(tool, p, f"조건에 맞는 데이터가 0건이라 {OP_LABEL[p.op]}을 계산할 수 없습니다{cond}.")
         rows = [] if groups else [{"구분": "전체", label: 0}]
         return ToolResult(tool=tool, params=p.model_dump(), rows=rows, value=0.0,
                           unit="건" if p.op == "count" else "",
