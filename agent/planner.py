@@ -16,7 +16,7 @@ from agent.context import build_vocabulary, render_context, show
 from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, plan_missing,
                          step_scope_missing, suggest_filters, validate_call)
 from agent.llm import GeminiClient, LLMClient, LLMError
-from agent.prompts import AGENT_TOOLS, CLARIFY_TOOL, LIMIT_TOOL, SYSTEM_PROMPT, user_prompt
+from agent.prompts import AGENT_TOOLS, CLARIFY_TOOL, LIMIT_TOOL, SYSTEM_PROMPT, scope_note, user_prompt
 from agent.schemas import PlanResponse
 
 MAX_QUESTION_LEN = 500
@@ -109,7 +109,7 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
         feedback = (f"{base_prompt}\n\n[이전 계획 검토 결과] 질문의 조건({labels})이 분석 인자에 반영되지 않았다. "
                     "모든 조건을 aggregate의 filters(또는 cost_vs_budget의 project_id 등)로 반드시 반영하라. "
                     f"aggregate를 쓴다면 filters 예: {json.dumps(suggest_filters(conditions, as_of), ensure_ascii=False)}. "
-                    "count_overdue_tasks·calculate_completion_rate·mh_overrun·summarize_by_category는 부서·프로젝트 조건을 받지 못한다. "
+                    f"{scope_note()} "
                     "조건을 반영할 수 있는 도구가 없으면 전체 결과를 내지 말고 note_limitation으로 이유를 밝혀라.")
         try:
             retry = _build(llm.generate(SYSTEM_PROMPT, feedback, gemini_tool_declarations() + AGENT_TOOLS), vocab, conditions)

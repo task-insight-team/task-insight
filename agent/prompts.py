@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+from engine import TOOLS
+
+from agent.guard import supports
+
 CLARIFY_TOOL = "ask_clarification"
 LIMIT_TOOL = "note_limitation"
 
@@ -30,7 +34,7 @@ AGENT_TOOLS: list[dict] = [
     },
 ]
 
-SYSTEM_PROMPT = """너는 업무·프로젝트 데이터 분석 도구의 '분석 계획 수립기'다.
+_SYSTEM_TEMPLATE = """너는 업무·프로젝트 데이터 분석 도구의 '분석 계획 수립기'다.
 너는 답을 직접 말하지 않는다. 반드시 함수 호출로만 응답한다. 숫자를 계산하거나 추측하지 않는다 (계산은 도구가 한다).
 
 규칙
@@ -47,12 +51,9 @@ SYSTEM_PROMPT = """너는 업무·프로젝트 데이터 분석 도구의 '분�
 
 용어
 - '미완료' = 상태가 완료가 아닌 모든 업무(미착수·진행중·보류). '기한 초과'(기한이 지난 미완료)와 다르다.
-- 특정 부서·프로젝트·직원으로 좁혀 묻는 질문은 그 대상만 계산되도록 aggregate의 filters를 쓴다.
-  count_overdue_tasks·calculate_completion_rate·mh_overrun·summarize_by_category에는 부서·프로젝트 조건을 넣을 수 없다.
-  조건을 반영할 수 없는 지표(예: 특정 부서의 완료율)는 다른 지표로 바꾸지 말고 note_limitation으로 밝힌다.
-  예) 품질 부서의 미완료 업무 수 → aggregate(op=count, filters=[부서 == 품질, 상태 != 완료])
-  예) 품질 부서의 기한 초과 업무 수 → aggregate(op=count, filters=[부서 == 품질, 상태 != 완료, 기한 < 기준일])
-  예) 특정 프로젝트의 예산 대비 비용 → cost_vs_budget(project_id)
+- 특정 부서·프로젝트·직원으로 좁혀 묻는 질문은 그 대상만 계산되도록 범위를 반드시 넣는다.
+{scope_guidance}
+  조건을 반영할 수 없는 지표는 다른 지표로 바꾸거나 전체 결과로 대신하지 말고 note_limitation으로 밝힌다.
 
 도구 선택 안내
 - 기한이 지난(기한 초과) 미완료 업무 수·목록 → count_overdue_tasks (그룹별이면 group_by)
@@ -66,6 +67,39 @@ SYSTEM_PROMPT = """너는 업무·프로젝트 데이터 분석 도구의 '분�
 - 그 밖의 개수·합계·평균, 조건 필터, 순위(예: 직원별 담당 업무 수 → table=main, op=count, group_by=[담당자ID], sort=value_desc)
   → aggregate. 특정 부서·프로젝트로 좁힐 때는 filters를 쓴다.
 """
+
+
+def scope_note() -> str:
+    """도구별 범위 인자 지원 현황. 실제 도구 스키마에서 계산하므로 엔진 버전이 바뀌어도 맞게 안내한다."""
+    dept = [n for n in TOOLS if supports(n, "department")]
+    proj = [n for n in TOOLS if supports(n, "project_id")]
+    none = [n for n in TOOLS if n not in dept and n not in proj and n != "aggregate"]
+    parts = ["aggregate는 filters로 부서·프로젝트·직원·상태·기한 조건을 모두 걸 수 있다"]
+    if dept:
+        parts.append(f"department 인자로 부서를 직접 받는 도구: {', '.join(dept)}")
+    if proj:
+        parts.append(f"project_id 인자로 프로젝트를 직접 받는 도구: {', '.join(proj)}")
+    if none:
+        parts.append(f"그 밖의 도구({', '.join(none)})는 부서·프로젝트 조건을 받지 못한다")
+    return ". ".join(parts) + "."
+
+
+def _scope_guidance() -> str:
+    lines = [f"  {scope_note()}",
+             "  예) 품질 부서의 미완료 업무 수 → aggregate(op=count, filters=[부서 == 품질, 상태 != 완료])"]
+    if supports("count_overdue_tasks", "department"):
+        lines.append("  예) 품질 부서의 기한 초과 업무 → count_overdue_tasks(department=품질)")
+    else:
+        lines.append("  예) 품질 부서의 기한 초과 업무 수 → aggregate(op=count, filters=[부서 == 품질, 상태 != 완료, 기한 < 기준일])")
+    if supports("calculate_completion_rate", "department"):
+        lines.append("  예) 연구 부서 직원별 완료율 → calculate_completion_rate(group_by=담당자ID, department=연구)")
+    if supports("calculate_completion_rate", "project_id"):
+        lines.append("  예) P03 프로젝트의 완료율 → calculate_completion_rate(project_id=P03)")
+    lines.append("  예) 특정 프로젝트의 예산 대비 비용 → cost_vs_budget(project_id)")
+    return "\n".join(lines)
+
+
+SYSTEM_PROMPT = _SYSTEM_TEMPLATE.replace("{scope_guidance}", _scope_guidance())
 
 
 def user_prompt(context: str, question: str) -> str:
