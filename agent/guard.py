@@ -262,6 +262,26 @@ def missing_conditions(tool: str, params: dict, conditions: list[Condition], voc
     return [c for c in conditions if not step_covers(tool, params, c, vocab)]
 
 
+# 범위 조건: 각 단계가 지켜야 한다 (같은 종류 값이 여럿이면 그중 하나 이상). 전사 결과로 대신 답하지 않게 막는다.
+# 지표·기한 초과 조건: 계획 전체에서 한 단계 이상이 계산하면 된다 (한 단계가 두 지표를 동시에 계산할 수는 없음).
+SCOPE_KINDS = ("department", "project", "employee", "status", "month")
+
+
+def step_scope_missing(tool: str, params: dict, conditions: list[Condition], vocab: Vocabulary) -> list[Condition]:
+    """이 단계가 범위 조건 종류별로 질문의 값을 하나도 반영하지 않았으면 그 조건들을 돌려준다."""
+    lacking: list[Condition] = []
+    for kind in SCOPE_KINDS:
+        group = [c for c in conditions if c.kind == kind]
+        if group and not any(step_covers(tool, params, c, vocab) for c in group):
+            lacking += group
+    return lacking
+
+
+def plan_missing(steps: list, conditions: list[Condition], vocab: Vocabulary) -> list[Condition]:
+    """계획의 어느 단계도 반영하지 않은 조건 (모든 종류)."""
+    return [c for c in conditions if not any(step_covers(s.tool, s.params, c, vocab) for s in steps)]
+
+
 def plan_fingerprint(plan: AnalysisPlan) -> str:
     """승인 대상 계획의 지문 (질문·단계·인자·설명 전체)."""
     text = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
