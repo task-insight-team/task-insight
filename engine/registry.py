@@ -7,7 +7,7 @@ agent는 run_tool만 호출한다. LLM이 만든 params는 여기서 Pydantic으
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Union
+from typing import Callable, Optional, Union
 
 import pandas as pd
 from pydantic import BaseModel, ValidationError
@@ -25,7 +25,7 @@ from contracts import (
     ToolResult,
 )
 from engine import tools
-from engine.loader import Dataset
+from engine.loader import DATASET_VERSION, Dataset
 
 
 @dataclass(frozen=True)
@@ -57,9 +57,41 @@ TOOLS: dict[str, ToolSpec] = {
 }
 
 
+_DATASET_ATTRS = ("kind", "main", "employees", "projects", "table")
+NOT_DATA = "분석할 데이터 형식이 아닙니다. 파일을 다시 불러와 주세요."
+
+
+def _as_dataset(data: object) -> tuple[Optional[Dataset], Optional[str]]:
+    """run_tool 입력을 Dataset으로 정규화한다. (Dataset, None) 또는 (None, 계산하지 않는 사유).
+
+    - DataFrame → 일반 CSV Dataset
+    - Dataset → 구조 버전(version)이 지금 엔진(DATASET_VERSION)과 같을 때만 사용
+    - 그 밖 → 형식 오류
+
+    클래스 비교(isinstance)로만 Dataset을 고르지 않는 이유: Streamlit 배포는 새 코드를 받으면 엔진 모듈을 다시 읽는데,
+    st.cache_resource에 남은 데이터는 옛 Dataset 클래스로 만든 것이라 isinstance가 False가 된다.
+    그러면 업무 데이터를 일반 CSV로 잘못 보고 "업무 파일이 있어야 한다"는 오류가 난다 (2026-11-23 배포에서 확인).
+    그래서 모양(속성)으로 Dataset을 알아보되, 옛 코드로 만든 데이터를 무조건 쓰지 않도록 구조 버전을 확인한다.
+    """
+    if isinstance(data, pd.DataFrame):
+        return Dataset.generic(data), None
+    if not all(hasattr(data, a) for a in _DATASET_ATTRS):
+        return None, NOT_DATA
+    version = getattr(data, "version", None)
+    if version != DATASET_VERSION:
+        shown = "정보 없음" if version is None else str(version)
+        return None, (f"앱이 업데이트되어, 이전에 불러온 데이터의 구조(버전 {shown})가 지금 엔진(버전 {DATASET_VERSION})과 "
+                      "다릅니다. 잘못 계산하지 않도록 실행하지 않았습니다. 데이터를 다시 불러와 주세요.")
+    if getattr(data, "kind", None) not in ("standard", "generic") or not isinstance(getattr(data, "main", None), pd.DataFrame):
+        return None, NOT_DATA
+    return data, None  # type: ignore[return-value]
+
+
 def run_tool(data: Union[Dataset, pd.DataFrame], name: str, params: dict) -> ToolResult:
     """도구를 이름으로 실행한다. 어떤 경우에도 예외 대신 ToolResult를 돌려준다."""
-    ds = data if isinstance(data, Dataset) else Dataset.generic(data)
+    ds, problem = _as_dataset(data)
+    if ds is None:
+        return ToolResult(tool=name, params=params or {}, error=problem)
     spec = TOOLS.get(name)
     if spec is None:
         return ToolResult(tool=name, params=params or {},
