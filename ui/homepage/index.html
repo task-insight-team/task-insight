@@ -188,7 +188,8 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 }
 
 /* ask */
-.ask-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:5vw;margin-top:70px;align-items:start}
+.ask-grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:3vw;margin-top:70px;align-items:start}
+.ask-right{min-width:0}
 .qlist{border-top:1px solid var(--line)}
 .q{width:100%;display:grid;grid-template-columns:64px 1fr 28px;align-items:center;gap:18px;padding:26px 0;border-bottom:1px solid var(--line);text-align:left;transition:padding .5s cubic-bezier(.16,1,.3,1)}
 .q .n{color:var(--red);font-size:14px;font-weight:600}
@@ -205,7 +206,7 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
   .qlist:hover .q{opacity:.28}
   .qlist:hover .q:hover{opacity:1}
 }
-.panel{position:sticky;top:110px;border:1px solid var(--line);border-radius:6px;padding:34px;background:rgba(255,255,255,.02);min-height:420px}
+.panel{border:1px solid var(--line);border-radius:6px;padding:22px 26px;background:rgba(255,255,255,.02)}
 .panel .ptop{display:flex;justify-content:space-between;font-size:12px;color:var(--sub)}
 .badge{border:1px solid var(--line);border-radius:999px;padding:4px 12px}
 .steps{display:grid;grid-template-columns:repeat(6,1fr);margin:34px 0 40px;position:relative}
@@ -222,8 +223,8 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 .tool summary::-webkit-details-marker{display:none}
 .tool p{margin-top:10px;color:var(--muted)}
 /* 배포된 분석 앱 (iframe) */
-.embed{margin-top:64px}
-.embed-frame{display:block;width:100%;height:clamp(640px,90svh,900px);border:0;border-radius:6px;background:var(--bg);outline:1px solid var(--line)}
+.embed{margin-top:16px}
+.embed-frame{display:block;width:100%;height:clamp(620px,85svh,860px);border:0;border-radius:6px;background:var(--bg);outline:1px solid var(--line)}
 .embed-note{margin-top:14px;font-size:13px;color:var(--muted);text-align:center}
 .embed-note a{color:var(--sub);text-decoration:underline;text-underline-offset:3px}
 .embed-note a:hover{color:var(--red)}
@@ -231,7 +232,7 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 .mcard{border-top:1px solid var(--line);padding-top:24px}
 .mcard .k{color:var(--sub);font-size:14px}
 .mcard .v{font-size:clamp(56px,6vw,96px);font-weight:200;letter-spacing:-.04em;margin-top:8px}
-@media (max-width:860px){.ask-grid,.missing{grid-template-columns:1fr}.panel{position:relative;top:0;min-height:0;margin:6px 0 18px;padding:24px 18px}.steps{margin:24px 0 26px}.step{font-size:10px}.embed{margin-top:40px}.embed-frame{height:min(760px,88svh)}}
+@media (max-width:860px){.ask-grid,.missing{grid-template-columns:1fr}.panel{margin:6px 0 18px;padding:24px 18px}.steps{margin:24px 0 26px}.step{font-size:10px}.embed{margin-top:28px}.embed-frame{height:min(760px,88svh)}}
 
 /* vs */
 #vs{text-align:center;overflow:hidden}
@@ -377,16 +378,18 @@ footer .logo{color:#fff}
   <p class="lead rv" data-t="askLead"></p>
   <div class="ask-grid">
     <div class="qlist" id="qlist"></div>
-    <aside class="panel rv" aria-live="polite">
-      <div class="ptop"><span data-t="panelTop"></span><span class="badge" data-t="badge"></span></div>
-      <div class="steps" id="steps"><div class="fill" id="fill"></div></div>
-      <p class="ans-q" id="ansQ" data-t="panelHint"></p>
-      <p class="ans" id="ans"></p>
-    </aside>
-  </div>
-  <div class="embed">
-    <iframe class="embed-frame" id="appFrame" src="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/?embed=true" title="Task Insight 분석 앱 (질문 입력, 분석 계획 승인, 결과 표시)" loading="lazy" allow="clipboard-write"></iframe>
-    <p class="embed-note"><a href="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/" target="_blank" rel="noopener" data-t="embedFallback"></a></p>
+    <div class="ask-right">
+      <aside class="panel rv" aria-live="polite">
+        <div class="ptop"><span data-t="panelTop"></span><span class="badge" data-t="badge"></span></div>
+        <div class="steps" id="steps"><div class="fill" id="fill"></div></div>
+        <p class="ans-q" id="ansQ" data-t="panelHint"></p>
+        <p class="ans" id="ans"></p>
+      </aside>
+      <div class="embed">
+        <iframe class="embed-frame" id="appFrame" src="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/?embed=true" title="Task Insight 분석 앱 (질문 입력, 분석 계획 승인, 결과 표시)" loading="lazy" allow="clipboard-write"></iframe>
+        <p class="embed-note"><a href="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/" target="_blank" rel="noopener" data-t="embedFallback"></a></p>
+      </div>
+    </div>
   </div>
   <div class="missing">
     <div class="mcard rv"><div class="k" data-t="miss1"></div><div class="v" id="miss1">—</div></div>
@@ -558,8 +561,8 @@ async function runQuestion(q, btn) {
     gsap.killTweensOf(panel);
     if (reduce) gsap.set(panel, { clearProps: "opacity,filter,transform" });
     else gsap.fromTo(panel, { opacity: 0, y: -12, filter: "blur(0px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: .6, ease: "expo.out" });
-  } else if (panel.parentElement !== document.querySelector(".ask-grid")) {
-    document.querySelector(".ask-grid").appendChild(panel);
+  } else if (panel.parentElement !== document.querySelector(".ask-right")) {
+    document.querySelector(".ask-right").prepend(panel);
   }
   const steps = [...stepsEl.querySelectorAll(".step")], fillBar = document.getElementById("fill");
   steps.forEach(s => s.classList.remove("on")); gsap.set(fillBar, { width: 0 });
