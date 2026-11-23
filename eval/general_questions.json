@@ -1,0 +1,36 @@
+{
+  "meta": {
+    "notice": "질문 문장만. 정답·채점 규칙은 eval/general_expected.json (채점 단계에서만 읽음)",
+    "purpose": "범용성 측정: kafe·sample.csv가 아닌 다른 업종 데이터(매출·재고·고객지원)에서 어디까지 답하고, 못 하는 것은 정직하게 거절하는지",
+    "datasets": {
+      "sales2026": "data/general/sales_2026.csv (과제 문서의 현실 규모 데이터, 12개월 × 3지역)",
+      "inventory": "data/general/inventory.csv (가상 재고, 3개 창고 18개 품목)",
+      "support": "data/general/support_tickets.csv (가상 고객지원 문의 26건, 2026-10~11)"
+    }
+  },
+  "questions": [
+    {"id": "G01", "dataset": "sales2026", "question": "지역별 매출 합계는?"},
+    {"id": "G02", "dataset": "sales2026", "question": "전체 판매 수량 합계는?"},
+    {"id": "G03", "dataset": "sales2026", "question": "매출이 가장 높은 달은?"},
+    {"id": "G04", "dataset": "sales2026", "question": "매출이 가장 낮은 달은?"},
+    {"id": "G05", "dataset": "sales2026", "question": "12월 매출을 11월과 비교하면 지역별로 어떻게 변했어?"},
+    {"id": "G06", "dataset": "sales2026", "question": "서울의 월평균 매출은?"},
+    {"id": "G07", "dataset": "sales2026", "question": "부산의 상반기 대비 하반기 매출 변화는?"},
+    {"id": "G08", "dataset": "sales2026", "question": "대구 매출은 1월 대비 12월에 얼마나 늘었어?"},
+    {"id": "G09", "dataset": "sales2026", "question": "지역별 매출 비중은?"},
+    {"id": "G10", "dataset": "sales2026", "question": "고객 만족도가 가장 낮은 지역은?"},
+
+    {"id": "G11", "dataset": "inventory", "question": "창고별 재고 수량 합계는?"},
+    {"id": "G12", "dataset": "inventory", "question": "분류별 평균 단가는?"},
+    {"id": "G13", "dataset": "inventory", "question": "원자재 재고 수량 합계는?"},
+    {"id": "G14", "dataset": "inventory", "question": "안전재고보다 수량이 적은 품목은 몇 개야?"},
+    {"id": "G15", "dataset": "inventory", "question": "재고 금액(수량×단가)이 가장 큰 창고는?"},
+    {"id": "G16", "dataset": "inventory", "question": "월별 입고 수량 추이는?"},
+
+    {"id": "G17", "dataset": "support", "question": "유형별 문의 건수는?"},
+    {"id": "G18", "dataset": "support", "question": "담당팀별 평균 처리시간은?"},
+    {"id": "G19", "dataset": "support", "question": "11월 문의 건수는 10월보다 얼마나 늘었어?"},
+    {"id": "G20", "dataset": "support", "question": "처리완료 비율이 가장 낮은 팀은?"},
+    {"id": "G21", "dataset": "support", "question": "고객별 재문의 횟수는?"}
+  ]
+}
