@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "dataset": "data/sample.csv (과제 문서 제공)",
+    "source": "과제 문서의 sample.csv 정답. docs/answer_key.md S1~S5와 같다",
+    "notice": "채점 전용. 에이전트·LLM 프롬프트에 넣지 않는다"
+  },
+  "answers": [
+    {"id": "S1", "checks": [{"type": "value", "equals": 500}]},
+    {"id": "S2", "checks": [{"type": "mapping", "equals": {"서울": 250, "부산": 250}}]},
+    {"id": "S3", "checks": [{"type": "mapping", "equals": {"2026-01": 300, "2026-02": 200}}]},
+    {"id": "S4", "checks": [{"type": "value", "equals": -33.33},
+                            {"type": "extreme", "which": "min", "id": "부산", "column_has": "증감률", "value": -75}]},
+    {"id": "S5", "checks": [{"type": "error", "contains": "2025-12"}]}
+  ]
+}
