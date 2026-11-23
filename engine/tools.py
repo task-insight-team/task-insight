@@ -113,6 +113,65 @@ def _parse_date(s: Optional[str]) -> Optional[pd.Timestamp]:
     return None if pd.isna(ts) else ts
 
 
+MAX_LISTED_VALUES = 20
+
+
+def _is_dateish(s: pd.Series) -> bool:
+    """날짜·월 글자 컬럼(일반 CSV)이면 True. 이런 컬럼은 '없는 날짜'도 정상 0건이라 값 확인을 하지 않는다."""
+    text = s.dropna().astype(str)
+    return not text.empty and text.str.match(r"^\d{4}-\d{2}(-\d{2})?$").mean() >= 0.5
+
+
+def _unknown_values(s: pd.Series, col: str, wanted: list) -> Optional[str]:
+    """글자 범주 컬럼에서 데이터에 없는 값을 찾으면 안내 문장, 모두 있으면 None.
+
+    없는 대상(오타·없는 부서)과 '값은 맞는데 조건에 맞는 행이 0건'을 구분하기 위해 쓴다.
+    """
+    if pd.api.types.is_numeric_dtype(s) or pd.api.types.is_datetime64_any_dtype(s) or _is_dateish(s):
+        return None
+    present = set(s.dropna().astype(str))
+    missing = [str(v) for v in wanted if str(v) not in present]
+    if not missing:
+        return None
+    msg = f"'{_show(col)}'에 {', '.join(repr(m) for m in missing)} 값이 없습니다."
+    # 범주처럼 짧은 값만 안내한다 (일반 CSV의 메모 같은 문장은 목록에 넣지 않음)
+    if col not in FREE_TEXT_COLUMNS and len(present) <= 60 and all(len(v) <= 30 for v in present):
+        values = sorted(present)
+        more = f" 외 {len(values) - MAX_LISTED_VALUES}개" if len(values) > MAX_LISTED_VALUES else ""
+        msg += f" 가능한 값: {', '.join(values[:MAX_LISTED_VALUES])}{more}"
+    return msg
+
+
+def _match_value(s: pd.Series, value: str) -> str:
+    """'품질팀'·'품질부'처럼 붙여 쓴 이름은 데이터에 있는 '품질'로 맞춘다 (없으면 그대로)."""
+    present = set(s.dropna().astype(str))
+    if value in present:
+        return value
+    for suffix in ("팀", "부서", "부"):
+        if value.endswith(suffix) and value[: -len(suffix)] in present:
+            return value[: -len(suffix)]
+    return value
+
+
+def _scope(data: pd.DataFrame, p: Any) -> tuple[pd.DataFrame, list[str], Optional[str]]:
+    """department·project_id 조건을 적용한다. (조건 적용 데이터, 기준 설명, 없는 대상이면 안내 문장)."""
+    desc = []
+    full = data  # 값 확인은 조건을 적용하기 전 전체 데이터로 한다 (영업+P05처럼 조합이 0건인 경우는 '없는 대상'이 아님)
+    for field, col in (("department", "department"), ("project_id", "project_id")):
+        value = getattr(p, field, None)
+        if value is None or str(value).strip() == "":
+            continue
+        if col not in full.columns:
+            return data, desc, f"'{_show(col)}' 정보가 없어 {_show(col)} 조건을 적용할 수 없습니다 (직원 파일 필요)."
+        value = _match_value(full[col], str(value).strip())
+        bad = _unknown_values(full[col], col, [value])
+        if bad:
+            return data, desc, bad
+        data = data.loc[(data[col] == value).fillna(False).astype(bool)]
+        desc.append(f"{_show(col)}={value}")
+    return data, desc, None
+
+
 def _base(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[~df["_invalid"].astype(bool)] if "_invalid" in df.columns else df
 
@@ -172,6 +231,12 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
                 value = [conv(v) for v in value] if f.op == "in" else conv(value)
             except (TypeError, ValueError):
                 return _err(tool, p, f"필터 값 '{f.value}'의 형식이 '{f.column}' 컬럼과 맞지 않습니다.")
+            if f.op in ("==", "!=", "in"):  # 없는 대상(오타·없는 부서)은 0건이 아니라 오류로 알린다
+                if conv is str:
+                    value = [_match_value(s, v) for v in value] if f.op == "in" else _match_value(s, value)
+                bad = _unknown_values(_base(df)[col], col, value if f.op == "in" else [value])
+                if bad:
+                    return _err(tool, p, bad)
             if f.op == "in":
                 mask = s.isin(value)
             else:
@@ -184,10 +249,16 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
         data = data.loc[data[value_col].notna()]
     for g in groups:
         data = data.loc[data[g].notna()]
-    if data.empty:
-        return _err(tool, p, "조건에 맞는 데이터가 없어 계산할 수 없습니다.")
 
     label = f"{OP_LABEL[p.op]}({_show(value_col)})" if value_col else "개수(건)"
+    if data.empty:  # 대상은 맞는데 조건에 맞는 행이 0개
+        cond = f" (조건: {' / '.join(desc)})" if desc else ""
+        if p.op == "mean":
+            return _err(tool, p, f"조건에 맞는 데이터가 0건이라 평균을 계산할 수 없습니다{cond}.")
+        rows = [] if groups else [{"구분": "전체", label: 0}]
+        return ToolResult(tool=tool, params=p.model_dump(), rows=rows, value=0.0,
+                          unit="건" if p.op == "count" else "",
+                          basis=f"{OP_LABEL[p.op]} 기준, 조건에 맞는 행 0개{cond}", used_rows=0)
     fmt = int if p.op == "count" else r
     total = len(data) if p.op == "count" else getattr(data[value_col], p.op)()
     if groups:
@@ -223,12 +294,16 @@ def count_overdue_tasks(ds: Dataset, p: CountOverdueParams) -> ToolResult:
     if as_of is None:
         return _err(tool, p, f"기준일 '{p.as_of}' 형식이 잘못되었습니다. YYYY-MM-DD로 입력해 주세요.")
 
-    data = _base(ds.main)
+    data, scope, bad = _scope(_base(ds.main), p)
+    if bad:
+        return _err(tool, p, bad)
     no_due = int(data["due_date"].isna().sum())
     data = data.loc[data["due_date"].notna()]
     overdue = (~_done(data) & (data["due_date"] < as_of)).fillna(False).astype(bool)
     basis = (f"기준일 {p.as_of}, 상태≠완료(미착수·진행중·보류 포함), 기한<기준일 (기한 당일은 초과 아님), "
              f"기한 빈칸 {no_due}건은 판정 불가로 제외, {len(data)}행 사용")
+    if scope:
+        basis = f"조건: {', '.join(scope)}, " + basis
 
     if p.group_by:
         col, bad = _group_col(tool, p, data, p.group_by)
@@ -262,7 +337,9 @@ def summarize_by_category(ds: Dataset, p: SummarizeByCategoryParams) -> ToolResu
     tool = "summarize_by_category"
     if not _standard(ds):
         return _err(tool, p, NEEDS_STANDARD)
-    data = _base(ds.main)
+    data, scope, unknown = _scope(_base(ds.main), p)
+    if unknown:
+        return _err(tool, p, unknown)
     col, bad = _group_col(tool, p, data, p.group_by)
     if bad:
         return bad
@@ -274,9 +351,12 @@ def summarize_by_category(ds: Dataset, p: SummarizeByCategoryParams) -> ToolResu
 
     data = data.loc[data[col].notna()]
     if data.empty:
+        if scope:  # 대상은 맞는데 조건에 맞는 업무가 0건
+            return ToolResult(tool=tool, params=p.model_dump(), rows=[], unit="건", used_rows=0,
+                              basis=f"조건: {', '.join(scope)}, 조건에 맞는 업무 0건")
         return _err(tool, p, "집계할 데이터가 없습니다.")
     headcount = None
-    if col == "department" and ds.employees is not None:
+    if col == "department" and ds.employees is not None and not scope:  # 조건이 있으면 부서 전체 인원으로 나누지 않음
         headcount = _base(ds.employees)["department"].value_counts()
 
     rows = []
@@ -297,6 +377,8 @@ def summarize_by_category(ds: Dataset, p: SummarizeByCategoryParams) -> ToolResu
     rows.sort(key=lambda x: (-x["미완료(건)"], str(x[_show(col)])))
 
     basis = f"{_show(col)}별 건수, 미완료=상태≠완료, 완료율=완료/전체×100"
+    if scope:
+        basis = f"조건: {', '.join(scope)}, " + basis
     if headcount is not None:
         basis += ", 인원=직원 표의 부서별 인원"
     if as_of is not None:
@@ -313,8 +395,12 @@ def calculate_completion_rate(ds: Dataset, p: CompletionRateParams) -> ToolResul
     tool = "calculate_completion_rate"
     if not _standard(ds):
         return _err(tool, p, NEEDS_STANDARD)
-    data = _base(ds.main)
+    data, scope, bad = _scope(_base(ds.main), p)
+    if bad:
+        return _err(tool, p, bad)
     if data.empty:
+        if scope:
+            return _err(tool, p, f"조건({', '.join(scope)})에 맞는 업무가 0건이라 완료율을 계산할 수 없습니다 (분모 0).")
         return _err(tool, p, "업무가 없어 완료율을 계산할 수 없습니다 (분모 0).")
     done = _done(data)
     overall = done.sum() / len(data) * 100
@@ -330,7 +416,8 @@ def calculate_completion_rate(ds: Dataset, p: CompletionRateParams) -> ToolResul
     else:
         rows = [{"구분": "전체", "전체(건)": len(data), "완료(건)": int(done.sum()), "완료율(%)": r(overall)}]
     return ToolResult(tool=tool, params=p.model_dump(), rows=_clean_rows(rows), value=r(overall), unit="%",
-                      basis=f"완료율=상태가 '완료'인 건수/전체 건수×100 (건수 기준), {len(data)}행 사용",
+                      basis=(f"조건: {', '.join(scope)}, " if scope else "")
+                      + f"완료율=상태가 '완료'인 건수/전체 건수×100 (건수 기준), {len(data)}행 사용",
                       used_rows=len(data))
 
 
