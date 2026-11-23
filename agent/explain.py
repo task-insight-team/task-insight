@@ -45,7 +45,13 @@ def _leaders(rows: list[dict], key: str) -> tuple[list[str], Any]:
 
 
 def _names(names: list[str]) -> str:
-    return ", ".join(names) + (" (공동 1위)" if len(names) > 1 else "")
+    return ", ".join(names) + (" (공동)" if len(names) > 1 else "")
+
+
+def _leader_rows(rows: list[dict], key: str) -> list[dict]:
+    """1위와 같은 값을 가진 행들 (동점). 각 행의 원래 수치를 따로 설명하기 위해 쓴다."""
+    top = rows[0].get(key)
+    return [r for r in rows if r.get(key) == top]
 
 
 def _listing(rows: list[dict], key: str, unit: str = "") -> str:
@@ -122,6 +128,11 @@ def _completion(res: ToolResult) -> str:
     first = res.rows[0]
     if len(res.rows) == 1:  # 대상이 하나면 '가장 낮은'이라고 쓰지 않는다
         return f"{first[cat]}의 완료율은 {pct(low)}입니다 (완료 {num(first.get('완료(건)'))}건 / 전체 {num(first.get('전체(건)'))}건)."
+    tied = _leader_rows(res.rows, "완료율(%)")
+    if len(tied) > 1:  # 완료율은 같아도 건수는 다를 수 있다 → 각자의 건수를 따로 쓴다
+        each = ", ".join(f"{r[cat]}(완료 {num(r.get('완료(건)'))}건 / 전체 {num(r.get('전체(건)'))}건)" for r in tied)
+        return (f"완료율이 가장 낮은 {cat}은(는) {each}로, 모두 {pct(low)}입니다 (공동). "
+                f"전체 완료율은 {pct(res.value)}입니다.")
     return (f"완료율이 가장 낮은 {cat}은(는) {_names(names)}로 {pct(low)}입니다"
             f" (완료 {num(first.get('완료(건)'))}건 / 전체 {num(first.get('전체(건)'))}건). 전체 완료율은 {pct(res.value)}입니다.")
 
@@ -134,6 +145,10 @@ def _mh(res: ToolResult) -> str:
     if not top:
         return "계획 대비 실적 MH를 초과한 업무가 없습니다."
     first = res.rows[0]
+    tied = _leader_rows(res.rows, "초과MH 합계")
+    if len(tied) > 1:
+        each = ", ".join(f"{r[cat]}(계획 {num(r.get('계획MH'))}MH, 실적 {num(r.get('실적MH'))}MH)" for r in tied)
+        return f"계획 대비 실적 MH 초과가 가장 큰 {cat}은(는) {each}로, 모두 초과 {num(top)}MH입니다 (공동)."
     return (f"계획 대비 실적 MH 초과가 가장 큰 {cat}은(는) {_names(names)}로 초과 {num(top)}MH입니다"
             f" (계획 {num(first.get('계획MH'))}MH, 실적 {num(first.get('실적MH'))}MH, 초과 투입 업무 {num(first.get('초과 투입 업무(건)'))}건)."
             f" ({_listing(res.rows, '초과MH 합계', 'MH')})")
@@ -148,6 +163,9 @@ def _cost(res: ToolResult) -> str:
     if res.params.get("project_id"):
         return f"{first['프로젝트ID']}의 비용 초과율은 {pct(first.get(key), True)}입니다 ({detail})."
     names, top = _leaders(res.rows, key)
+    tied = _leader_rows(res.rows, key)
+    if len(tied) > 1:  # 동점이면 1위 행 하나의 금액을 다른 프로젝트 것처럼 쓰지 않는다
+        detail = "; ".join(f"{r['프로젝트ID']} 예산 {num(r.get('예산'))}원 대비 실적 {num(r.get('실적 총비용'))}원" for r in tied)
     over = [r["프로젝트ID"] for r in res.rows if (r.get(key) or 0) > 0]
     out = f"비용 초과율이 가장 높은 프로젝트는 {_names(names)}로 {pct(top, True)}입니다 ({detail})."
     out += f" 예산을 초과한 프로젝트는 {len(over)}개입니다" + (f": {', '.join(over)}." if over else ".")
@@ -206,7 +224,33 @@ def _periods(res: ToolResult) -> str:
     keys = list(r)
     prev, cur = keys[1], keys[2]
     if res.params.get("group_by"):
-        return f"{prev} → {cur} {keys[0]}별 비교 결과 {len(res.rows)}개 항목을 표로 확인하세요."
+        cat = keys[0]
+        # 전체 증감률은 value(전체 기준), 그룹별 증감은 rows(그룹 기준)에서 가져온다
+        if res.value is not None:
+            out = f"{prev} → {cur} 전체 증감률은 {pct(res.value, True)}입니다 (전체 합산 기준)."
+        else:
+            out = f"{prev} → {cur} 전체 증감률은 계산할 수 없습니다 (이전 값이 0이거나 데이터 없음)."
+
+        def item(row: dict) -> str:
+            rate = f", {pct(row['증감률(%)'], True)}" if row.get("증감률(%)") is not None else ""
+            return f"{row[cat]}({num(row.get(prev))} → {num(row.get(cur))}{rate})"
+
+        down = [row for row in res.rows if row.get("증감") is not None and row["증감"] < 0]
+        up = [row for row in res.rows if row.get("증감") is not None and row["증감"] > 0]
+        same = [row for row in res.rows if row.get("증감") == 0]
+        parts = []
+        if down:
+            parts.append(f"감소한 {cat}: {', '.join(item(x) for x in down)}")
+        if up:
+            parts.append(f"증가한 {cat}: {', '.join(item(x) for x in up)}")
+        if same:
+            parts.append(f"변화 없음: {', '.join(str(x[cat]) for x in same)}")
+        unknown = [str(x[cat]) for x in res.rows if x.get("증감") is None]
+        if unknown:
+            parts.append(f"한쪽 기간 데이터가 없어 비교 불가: {', '.join(unknown)}")
+        if parts:
+            out += f" {cat}별(그룹 기준)로는 " + " / ".join(parts) + "."
+        return out
     out = f"{prev} {num(r[prev])} → {cur} {num(r[cur])}, 증감 {num(r.get('증감'))}"
     if r.get("증감률(%)") is not None:
         out += f" ({pct(r['증감률(%)'], True)})"

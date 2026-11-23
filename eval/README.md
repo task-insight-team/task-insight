@@ -13,6 +13,19 @@ python -m eval.run_eval --out eval_result.json # 질문별 도구·인자·판�
 출력 예: `O Q4 예산 대비 비용 초과율이 가장 높은 프로젝트는?  도구: cost_vs_budget | '비용 초과율(%)' 최대 P01 (30.72)`
 전부 맞으면 종료 코드 0, 하나라도 틀리면 1. 질문 사이 2초 대기(`--delay`, 무료 한도 보호).
 
+## 질문 묶음 (`--set`)
+| 묶음 | 질문 | 정답 기준 |
+|---|---|---|
+| `core` (기본) | 평가 질문 Q1~Q7 + 과제 sample.csv S1~S5 (12개) | 정답 파일. **발표용 점수는 이 묶음** |
+| `paraphrase` | 같은 질문을 사용자 말투로 바꿔 물은 것 (`eval/extra_questions.json`) | 원래 질문(`same_as`)의 정답 규칙 그대로 |
+| `refuse` | 데이터에 없는 컬럼·지표를 묻는 질문 (예: sample.csv에 "부서별 미완료 업무") | 숫자 없이 지원 불가·되묻기로 끝나야 정답. 다른 분석을 대신 실행하면 오답 (과제 Step 1 "존재하지 않는 컬럼 질문" 기준) |
+
+```powershell
+python -m eval.run_eval --set all --out eval_all.json --md eval_report.md   # 전부 (Gemini 약 30~40회)
+```
+`--md`는 제출용 측정 표(묶음별 정답 수, 질문당 시간 평균·최대, LLM 호출 수)와 질문별 결과를 저장합니다.
+LLM 호출 수는 에이전트가 요청한 횟수입니다 (재계획 포함, SDK 내부 재시도 제외).
+
 ## 정답 격리 (CLAUDE.md)
 | 단계 | 읽는 파일 |
 |---|---|

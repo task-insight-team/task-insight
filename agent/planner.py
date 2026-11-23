@@ -13,7 +13,8 @@ from engine import gemini_tool_declarations
 from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
-from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, plan_missing,
+from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, missing_concepts, plan_missing,
+                         visible_columns,
                          step_scope_missing, suggest_filters, validate_call)
 from agent.llm import GeminiClient, LLMClient, LLMError
 from agent.prompts import AGENT_TOOLS, CLARIFY_TOOL, LIMIT_TOOL, SYSTEM_PROMPT, scope_note, user_prompt
@@ -91,6 +92,12 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
     if missing_targets:  # 없는 대상은 LLM에 묻기 전에 바로 되묻는다 (비슷한 값으로 바꿔 답하지 않음)
         return PlanResponse(status="clarify", question=question, as_of=as_of, rejected=missing_targets,
                             message="질문에 나온 대상을 데이터에서 찾을 수 없습니다. " + " ".join(missing_targets))
+    lacking = missing_concepts(question, vocab)
+    if lacking:  # 질문에 필요한 컬럼이 데이터에 없으면 LLM을 부르지 않고, 다른 분석으로 대신하지도 않는다
+        cols = ", ".join(visible_columns(vocab)) or "(표시할 수 있는 컬럼 없음)"
+        return PlanResponse(status="unsupported", question=question, as_of=as_of, rejected=[f"필요한 정보 없음: {', '.join(lacking)}"],
+                            message=(f"현재 데이터에는 {cols} 컬럼만 있어 '{', '.join(lacking)}' 정보가 필요한 분석을 할 수 없습니다. "
+                                     "다른 분석으로 대신하지 않습니다. 해당 컬럼이 있는 데이터를 올리거나 질문을 바꿔 주세요."))
     conditions = extract_conditions(question, vocab)
     base_prompt = user_prompt(render_context(ds, vocab), question)
     try:
@@ -119,6 +126,12 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
             pass
 
     steps, rejected, notices, clarify = built["steps"], built["rejected"], built["notices"], built["clarify"]
+    if steps and built["limited"] and vocab.kind != "standard":
+        # 일반 CSV에서 AI가 '답할 수 없다'고 하면서 다른 분석을 붙인 경우: 대체 분석을 내보내지 않는다
+        cols = ", ".join(visible_columns(vocab)) or "(표시할 수 있는 컬럼 없음)"
+        return PlanResponse(status="unsupported", question=question, as_of=as_of, notices=notices, model=model,
+                            rejected=[f"{s.purpose}: 질문과 다른 대체 분석이라 제외" for s in steps],
+                            message=(" ".join(notices) + f"\n현재 데이터의 컬럼: {cols}. 다른 분석으로 대신하지 않습니다."))
     if steps:
         notices = notices + [f"계획에서 제외한 분석: {r}" for r in rejected]
         summary = f"다음 {len(steps)}단계 분석을 실행합니다: " + " / ".join(s.purpose for s in steps)
@@ -191,4 +204,5 @@ def _build(reply, vocab, conditions) -> dict:
         rejected += [f"{s.purpose}: 질문 조건({', '.join(x.label for x in unmet)})을 계획이 다루지 않아 제외했습니다."
                      for s in steps]
         steps = []
-    return {"steps": steps, "rejected": rejected, "notices": notices, "clarify": clarify, "uncovered": uncovered}
+    return {"steps": steps, "rejected": rejected, "notices": notices, "clarify": clarify, "uncovered": uncovered,
+            "limited": bool(limits)}
