@@ -7,7 +7,7 @@ agent는 run_tool만 호출한다. LLM이 만든 params는 여기서 Pydantic으
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Union
+from typing import Callable, Optional, Union
 
 import pandas as pd
 from pydantic import BaseModel, ValidationError
@@ -57,9 +57,28 @@ TOOLS: dict[str, ToolSpec] = {
 }
 
 
+def _as_dataset(data: object) -> Optional[Dataset]:
+    """run_tool 입력을 Dataset으로. DataFrame은 일반 CSV로 감싼다.
+
+    클래스 비교(isinstance)만 하지 않는 이유: Streamlit 배포는 새 코드를 받으면 엔진 모듈을 다시 읽는데,
+    st.cache_resource에 남은 데이터는 옛 Dataset 클래스로 만든 것이라 isinstance가 False가 된다.
+    그러면 업무 데이터를 일반 CSV로 잘못 보고 "업무 파일이 있어야 한다"는 오류가 난다 (2026-11-23 배포에서 확인).
+    그래서 Dataset과 같은 모양(kind·main·employees·projects·table)이면 그대로 쓴다.
+    """
+    if isinstance(data, Dataset):
+        return data
+    if isinstance(data, pd.DataFrame):
+        return Dataset.generic(data)
+    if all(hasattr(data, a) for a in ("kind", "main", "employees", "projects", "table")):
+        return data  # type: ignore[return-value]
+    return None
+
+
 def run_tool(data: Union[Dataset, pd.DataFrame], name: str, params: dict) -> ToolResult:
     """도구를 이름으로 실행한다. 어떤 경우에도 예외 대신 ToolResult를 돌려준다."""
-    ds = data if isinstance(data, Dataset) else Dataset.generic(data)
+    ds = _as_dataset(data)
+    if ds is None:
+        return ToolResult(tool=name, params=params or {}, error="분석할 데이터 형식이 아닙니다. 파일을 다시 불러와 주세요.")
     spec = TOOLS.get(name)
     if spec is None:
         return ToolResult(tool=name, params=params or {},

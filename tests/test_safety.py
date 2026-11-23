@@ -53,3 +53,30 @@ def test_injection_text_is_data_only():
 def test_results_are_json_serializable(kafe):
     for name, params in [("find_recurring_issues", {}), ("cost_vs_budget", {}), ("check_missing_data", {})]:
         json.dumps(run_tool(kafe, name, params).model_dump(), ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# 배포 중 모듈 재로드: 캐시에 남은 옛 Dataset 객체도 업무 데이터로 인식 (2026-11-23 배포에서 발견)
+# ---------------------------------------------------------------------------
+def test_run_tool_accepts_dataset_after_module_reload():
+    """engine.loader를 다시 읽으면 Dataset 클래스가 새로 생긴다. 그 전후 객체가 섞여도 업무 데이터로 계산해야 한다."""
+    import importlib
+
+    import engine.loader as loader_mod
+    from conftest import AS_OF, kafe_files
+
+    fresh = importlib.reload(loader_mod)  # Streamlit 배포가 새 코드를 받을 때와 같은 상황
+    try:
+        ds = fresh.load_dataset(kafe_files("tasks", "employees", "projects")).dataset
+        from engine.registry import Dataset as registry_dataset
+        assert type(ds) is not registry_dataset  # 클래스가 달라진 상황을 실제로 재현했는지
+        r = run_tool(ds, "count_overdue_tasks", {"as_of": AS_OF, "department": "품질"})
+        assert r.ok, r.error
+        assert r.value == 8
+    finally:
+        importlib.reload(loader_mod)
+
+
+def test_run_tool_rejects_unknown_input():
+    r = run_tool(object(), "aggregate", {"op": "count"})
+    assert not r.ok and "데이터 형식" in r.error
