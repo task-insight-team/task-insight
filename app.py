@@ -30,6 +30,8 @@ st.title("Task Insight")
 
 
 KAFE_DIR = Path(__file__).parent / "data" / "kafe"
+CAFE_DIR = Path(__file__).parent / "data" / "cafe"  # 우리 카페 예시 (가상 합성 데이터, 개인정보 없음)
+CAFE_LABEL = "예시 데이터 (우리 카페)"
 KIND_NAMES = {"tasks": "업무", "employees": "직원", "projects": "프로젝트", "generic": "일반 CSV"}
 SHOW_LEVEL = {"error": st.error, "warning": st.warning, "info": st.info}
 
@@ -105,9 +107,11 @@ def show_load_report(res, previews):
 
 
 st.subheader("1. 데이터")
-source = st.radio("분석할 데이터", ["예시 데이터 (kafe)", "내 CSV 올리기"], horizontal=True)
-if source.startswith("예시"):
+source = st.radio("분석할 데이터", ["예시 데이터 (kafe)", CAFE_LABEL, "내 CSV 올리기"], horizontal=True)
+if source == "예시 데이터 (kafe)":
     files = tuple((f"{n}.csv", (KAFE_DIR / f"{n}.csv").read_bytes()) for n in ("tasks", "employees", "projects"))
+elif source == CAFE_LABEL:
+    files = (("cafe_sales.csv", (CAFE_DIR / "cafe_sales.csv").read_bytes()),)
 else:
     uploads = st.file_uploader(
         "CSV 파일을 올려 주세요 (업무·직원·프로젝트 파일 각 1개, 또는 일반 CSV 1개 / 파일당 10MB 이하)",
@@ -146,11 +150,23 @@ KAFE_EXAMPLES = [  # 발표용 질문 5개. 클릭하면 질문 입력창을 채
 SAMPLE_EXAMPLES = ["지역별 매출은?", "전월 대비 매출 변화와 감소 지역은?"]  # month·region·sales 컬럼이 있는 일반 CSV용
 
 
+CAFE_EXAMPLES = [  # 우리 카페 예시 (날짜·메뉴·분류·판매수량·매출액 컬럼이 있는 일반 CSV용)
+    "메뉴별 매출 합계는?",
+    "월별 매출 합계는?",
+    "분류별 매출 비중은?",
+    "메뉴별 평균 판매단가는?",
+    "10월은 9월보다 매출이 얼마나 변했나?",
+]
+
+
 def example_questions(ds) -> list[str]:
     """데이터에 맞는 예시 질문만 돌려 준다 (맞지 않는 데이터에는 보여 주지 않는다)."""
     if ds.kind == "standard":
         return KAFE_EXAMPLES
-    return SAMPLE_EXAMPLES if {"month", "region", "sales"} <= set(map(str, ds.main.columns)) else []
+    cols = set(map(str, ds.main.columns))
+    if {"날짜", "메뉴", "매출액"} <= cols:
+        return CAFE_EXAMPLES
+    return SAMPLE_EXAMPLES if {"month", "region", "sales"} <= cols else []
 
 
 def show_value(v) -> str:
