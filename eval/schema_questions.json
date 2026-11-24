@@ -1,0 +1,140 @@
+{
+  "meta": {
+    "notice": "질문 문장만. 정답·채점 규칙은 eval/schema_expected.json (채점 단계에서만 읽음)",
+    "purpose": "이슈 #34 회귀 묶음: 컬럼 이름이 질문 낱말과 다른 CSV(영문 헤더·세미콜론·₩·직원표형)에서, 있는 컬럼은 찾아 답하고 없는 정보는 정직하게 거절하는지",
+    "written": "2026-11-24, 에이전트 결과를 보기 전에 질문을 고정함. 에이전트 결과를 보고 질문·정답을 바꾸지 않는다",
+    "datasets": {
+      "sales_kr": "data/schema/sales_kr.csv (한글 헤더, 주문 단위·일 단위 날짜, 36건, 2026-09~11)",
+      "tickets": "data/schema/tickets_en.csv (영문 헤더 고객지원 티켓 40건, status=open/closed/pending)",
+      "stock": "data/schema/stock_semicolon.csv (세미콜론 구분, 단가에 ₩·천 단위 쉼표, 영문 헤더 18품목)",
+      "hr": "data/schema/hr_staff.csv (직원표형 인사 24명, employee_id 없음 → 일반 CSV)"
+    }
+  },
+  "questions": [
+    {
+      "id": "C01",
+      "dataset": "sales_kr",
+      "question": "지역별 매출액 합계는?"
+    },
+    {
+      "id": "C02",
+      "dataset": "sales_kr",
+      "question": "상품별 판매수량 합계는?"
+    },
+    {
+      "id": "C03",
+      "dataset": "sales_kr",
+      "question": "월별 매출액 추이는?"
+    },
+    {
+      "id": "C04",
+      "dataset": "sales_kr",
+      "question": "매출액이 가장 큰 지역은?"
+    },
+    {
+      "id": "C05",
+      "dataset": "tickets",
+      "question": "카테고리별 티켓 수는?"
+    },
+    {
+      "id": "C06",
+      "dataset": "tickets",
+      "question": "담당자별 open 티켓 수는?"
+    },
+    {
+      "id": "C07",
+      "dataset": "tickets",
+      "question": "상태가 open인 티켓은 몇 건이야?"
+    },
+    {
+      "id": "C08",
+      "dataset": "tickets",
+      "question": "카테고리별 평균 처리시간은?"
+    },
+    {
+      "id": "C09",
+      "dataset": "stock",
+      "question": "창고별 재고 합계는?"
+    },
+    {
+      "id": "C10",
+      "dataset": "stock",
+      "question": "창고별 평균 단가는?"
+    },
+    {
+      "id": "C11",
+      "dataset": "stock",
+      "question": "제품별 재고 합계는?"
+    },
+    {
+      "id": "C12",
+      "dataset": "stock",
+      "question": "재고 수량 합계는?"
+    },
+    {
+      "id": "C13",
+      "dataset": "stock",
+      "question": "안전재고보다 재고가 적은 품목은 몇 개야?"
+    },
+    {
+      "id": "C14",
+      "dataset": "stock",
+      "question": "창고별 재고 금액(재고×단가)은?"
+    },
+    {
+      "id": "C15",
+      "dataset": "hr",
+      "question": "부서별 평균 연봉은?"
+    },
+    {
+      "id": "C16",
+      "dataset": "hr",
+      "question": "직급별 인원은?"
+    },
+    {
+      "id": "C17",
+      "dataset": "hr",
+      "question": "부서별 초과근무시간 합계는?"
+    },
+    {
+      "id": "C18",
+      "dataset": "tickets",
+      "question": "고객별 티켓 수는?"
+    },
+    {
+      "id": "C19",
+      "dataset": "sales_kr",
+      "question": "지역별 고객 만족도는?"
+    },
+    {
+      "id": "C20",
+      "dataset": "sales_kr",
+      "question": "상품별 반품 건수는?"
+    },
+    {
+      "id": "C21",
+      "dataset": "tickets",
+      "question": "채널별 티켓 수는?"
+    },
+    {
+      "id": "C22",
+      "dataset": "stock",
+      "question": "창고별 배송 지연 건수는?"
+    },
+    {
+      "id": "C23",
+      "dataset": "stock",
+      "question": "월별 입고 수량은?"
+    },
+    {
+      "id": "C24",
+      "dataset": "hr",
+      "question": "성별 평균 연봉은?"
+    },
+    {
+      "id": "C25",
+      "dataset": "hr",
+      "question": "부서별 퇴사율은?"
+    }
+  ]
+}

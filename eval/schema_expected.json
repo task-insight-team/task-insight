@@ -1,0 +1,297 @@
+{
+ "meta": {
+  "notice": "채점 전용. 에이전트·LLM 프롬프트에 넣지 않는다",
+  "kinds": {
+   "answer": "컬럼 이름이 질문 낱말과 달라도(category=카테고리, warehouse=창고, agent=담당자, stock=재고) 답해야 함. 정답과 일치해야 통과",
+   "refuse": "데이터에 없는 정보(고객·만족도·반품·채널·배송 지연·입고일·성별·퇴사). 숫자 없이 지원 불가·되묻기로 끝나야 통과 (다른 컬럼으로 대신 답하면 오답)"
+  },
+  "source": "원본 CSV를 pandas로 직접 계산 (소수 둘째 자리 사사오입). tests/test_eval_grader.py가 원본 CSV로 다시 계산해 확인한다",
+  "issue": "https://github.com/task-insight-team/task-insight/issues/34"
+ },
+ "answers": [
+  {
+   "id": "C01",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "광주": 3138000,
+      "부산": 1884000,
+      "서울": 2835000
+     }
+    }
+   ]
+  },
+  {
+   "id": "C02",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "모듈C": 119,
+      "센서A": 90,
+      "센서B": 79
+     }
+    }
+   ]
+  },
+  {
+   "id": "C03",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "2026-09": 1707000,
+      "2026-10": 2946000,
+      "2026-11": 3204000
+     }
+    }
+   ]
+  },
+  {
+   "id": "C04",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "extreme",
+     "which": "max",
+     "id": "광주",
+     "value": 3138000
+    }
+   ]
+  },
+  {
+   "id": "C05",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "shipping": 10,
+      "bug": 10,
+      "account": 10,
+      "billing": 10
+     }
+    }
+   ]
+  },
+  {
+   "id": "C06",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "lee": 7,
+      "park": 6,
+      "kim": 6
+     }
+    }
+   ]
+  },
+  {
+   "id": "C07",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "found",
+     "equals": 19
+    }
+   ]
+  },
+  {
+   "id": "C08",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "account": 16.5,
+      "billing": 7,
+      "bug": 16,
+      "shipping": 8
+     }
+    }
+   ]
+  },
+  {
+   "id": "C09",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "gimhae": 1513,
+      "incheon": 1450,
+      "pyeongtaek": 788
+     }
+    }
+   ]
+  },
+  {
+   "id": "C10",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "gimhae": 11000,
+      "incheon": 17983.33,
+      "pyeongtaek": 11183.33
+     }
+    }
+   ]
+  },
+  {
+   "id": "C11",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "P001": 126,
+      "P002": 400,
+      "P003": 398,
+      "P004": 322,
+      "P005": 46,
+      "P006": 182,
+      "P007": 98,
+      "P008": 222,
+      "P009": 196,
+      "P010": 11,
+      "P011": 336,
+      "P012": 282,
+      "P013": 148,
+      "P014": 144,
+      "P015": 290,
+      "P016": 83,
+      "P017": 365,
+      "P018": 102
+     }
+    }
+   ]
+  },
+  {
+   "id": "C12",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "found",
+     "equals": 3751
+    }
+   ]
+  },
+  {
+   "id": "C13",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "found",
+     "equals": 8
+    }
+   ]
+  },
+  {
+   "id": "C14",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "gimhae": 10438200,
+      "incheon": 18760200,
+      "pyeongtaek": 5378900
+     }
+    }
+   ]
+  },
+  {
+   "id": "C15",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "생산": 61865000,
+      "영업": 58911666.67,
+      "인사": 61943333.33,
+      "품질": 56898333.33
+     }
+    }
+   ]
+  },
+  {
+   "id": "C16",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "부장": 10,
+      "대리": 5,
+      "과장": 5,
+      "사원": 4
+     }
+    }
+   ]
+  },
+  {
+   "id": "C17",
+   "kind": "answer",
+   "checks": [
+    {
+     "type": "mapping",
+     "equals": {
+      "생산": 89,
+      "영업": 177,
+      "인사": 175,
+      "품질": 111
+     }
+    }
+   ]
+  },
+  {
+   "id": "C18",
+   "kind": "refuse",
+   "checks": []
+  },
+  {
+   "id": "C19",
+   "kind": "refuse",
+   "checks": []
+  },
+  {
+   "id": "C20",
+   "kind": "refuse",
+   "checks": []
+  },
+  {
+   "id": "C21",
+   "kind": "refuse",
+   "checks": []
+  },
+  {
+   "id": "C22",
+   "kind": "refuse",
+   "checks": []
+  },
+  {
+   "id": "C23",
+   "kind": "refuse",
+   "checks": []
+  },
+  {
+   "id": "C24",
+   "kind": "refuse",
+   "checks": []
+  },
+  {
+   "id": "C25",
+   "kind": "refuse",
+   "checks": []
+  }
+ ]
+}

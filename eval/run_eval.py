@@ -40,6 +40,7 @@ from engine import load_dataset  # noqa: E402
 KAFE_DIR = ROOT / "data" / "kafe"
 SAMPLE_CSV = ROOT / "data" / "sample.csv"
 GENERAL_DIR = ROOT / "data" / "general"
+SCHEMA_DIR = ROOT / "data" / "schema"  # 이슈 #34: 컬럼 이름이 질문 낱말과 다른 CSV
 KAFE_QUESTIONS = ROOT / "docs" / "kafe_questions.json"
 KAFE_ANSWERS = ROOT / "tests" / "fixtures" / "kafe" / "evaluation_answers.json"  # 2단계에서만 연다
 SAMPLE_QUESTIONS = Path(__file__).with_name("sample_questions.json")  # 과제 sample.csv 질문 문장
@@ -50,11 +51,15 @@ GENERAL_QUESTIONS = Path(__file__).with_name("general_questions.json")  # 다른
 GENERAL_EXPECTED = Path(__file__).with_name("general_expected.json")  # 그 정답·종류. 2단계에서만 연다
 HOLDOUT_QUESTIONS = Path(__file__).with_name("holdout_questions.json")  # 처음 보는 질문 (수정 후 과적합 확인용)
 HOLDOUT_EXPECTED = Path(__file__).with_name("holdout_expected.json")  # 그 정답·종류. 2단계에서만 연다
+SCHEMA_QUESTIONS = Path(__file__).with_name("schema_questions.json")  # 다른 구조 CSV 질문 (이슈 #34 회귀)
+SCHEMA_EXPECTED = Path(__file__).with_name("schema_expected.json")  # 그 정답·종류. 2단계에서만 연다
 GENERAL_FILES = {"sales2026": "sales_2026.csv", "inventory": "inventory.csv", "support": "support_tickets.csv"}
+SCHEMA_FILES = {"sales_kr": "sales_kr.csv", "tickets": "tickets_en.csv", "stock": "stock_semicolon.csv", "hr": "hr_staff.csv"}
 SETS = ("core", "paraphrase", "refuse", "demo")  # --set all = 이 묶음들 (발표 전 확인용, 호출 수 유지)
-EXTRA_SETS = ("general", "holdout")  # all에 넣지 않고 따로 돌리는 묶음 (Gemini 호출 절약)
+EXTRA_SETS = ("general", "holdout", "schema")  # all에 넣지 않고 따로 돌리는 묶음 (Gemini 호출 절약)
 # 다른 업종 데이터 묶음: (질문 파일, 정답·종류 파일). 종류(answer·limit·refuse)별로 채점한다
-FILE_SETS = {"general": (GENERAL_QUESTIONS, GENERAL_EXPECTED), "holdout": (HOLDOUT_QUESTIONS, HOLDOUT_EXPECTED)}
+FILE_SETS = {"general": (GENERAL_QUESTIONS, GENERAL_EXPECTED), "holdout": (HOLDOUT_QUESTIONS, HOLDOUT_EXPECTED),
+             "schema": (SCHEMA_QUESTIONS, SCHEMA_EXPECTED)}
 
 # Gemini 한도 초과(429): 에이전트 실력과 무관하므로 오답으로 세지 않는다.
 # 그 질문만 기다렸다가 다시 돌리고, 그래도 안 되면 '측정 못 함'으로 정답률 분모에서 뺀다.
@@ -67,7 +72,8 @@ QUOTA_STOP_AFTER = 3  # 연속 이만큼의 질문이 끝까지 한도 초과면
 KAFE_AS_OF = "2026-11-19"
 SAMPLE_AS_OF = "2026-02-28"  # sample.csv 마지막 달. '전월 대비'의 기준 달이 2026-02가 되게 한다
 AS_OF = {"kafe": KAFE_AS_OF, "sample": SAMPLE_AS_OF,
-         "sales2026": "2026-12-31", "inventory": "2026-11-30", "support": "2026-11-30"}  # 데이터별 기준일
+         "sales2026": "2026-12-31", "inventory": "2026-11-30", "support": "2026-11-30",
+         "sales_kr": "2026-11-30", "tickets": "2026-11-30", "stock": "2026-11-30", "hr": "2026-11-30"}  # 데이터별 기준일
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +149,7 @@ def load_datasets() -> dict:
     kafe = load_dataset({f"{n}.csv": KAFE_DIR / f"{n}.csv" for n in ("tasks", "employees", "projects")})
     sample = load_dataset({"sample.csv": SAMPLE_CSV})
     general = {k: load_dataset({f: GENERAL_DIR / f}) for k, f in GENERAL_FILES.items()}
+    general |= {k: load_dataset({f: SCHEMA_DIR / f}) for k, f in SCHEMA_FILES.items()}
     assert kafe.ok and sample.ok and all(g.ok for g in general.values()), "데이터를 불러오지 못했습니다"
     return {"kafe": kafe.dataset, "sample": sample.dataset, **{k: g.dataset for k, g in general.items()}}
 
@@ -416,7 +423,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--delay", type=float, default=2.0, help="질문 사이 대기 초 (무료 한도 보호)")
     ap.add_argument("--out", help="결과를 JSON으로 저장할 경로")
     ap.add_argument("--set", default="core", choices=[*SETS, *EXTRA_SETS, "all"],
-                    help="질문 묶음 (기본 core = 발표용 점수, all = core·paraphrase·refuse·demo, general·holdout은 따로)")
+                    help="질문 묶음 (기본 core = 발표용 점수, all = core·paraphrase·refuse·demo, general·holdout·schema는 따로)")
     ap.add_argument("--md", help="측정 표(정확도·시간·호출 수)를 마크다운으로 저장할 경로")
     ap.add_argument("--quota-wait", type=float, default=QUOTA_WAIT_S, help="한도 초과 질문을 다시 돌리기 전 대기 초")
     ap.add_argument("--quota-retries", type=int, default=QUOTA_RETRIES, help="한도 초과 질문을 다시 돌리는 최대 횟수")

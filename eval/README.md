@@ -60,6 +60,17 @@ python -m eval.run_eval --set general --out eval_general.json --md eval_general.
 ```
 정답 값은 테스트가 원본 CSV(pandas)로 다시 계산해 확인한다 (엔진 결과를 옮겨 적지 않음).
 
+### 다른 구조 CSV (`--set schema`, `all`에 포함되지 않음, 이슈 #34 회귀)
+컬럼 이름이 질문 낱말과 다른 CSV 4종(`data/schema/`)과 질문 25개 (`eval/schema_questions.json`, 정답 `schema_expected.json`).
+- 데이터: 한글 헤더 매출(일 단위 날짜) / 영문 헤더 티켓(`category`·`agent`·`status`) / 세미콜론·`₩1,200` 재고(`warehouse`·`stock`) / 직원표형 인사(`employee_id` 없음 → 일반 CSV)
+- `answer` 17개: "카테고리별", "담당자별 open", "창고별 재고"처럼 낱말과 컬럼 이름이 달라도 답해야 함
+- `refuse` 8개: 고객·만족도·반품·채널·배송 지연·입고일·성별·퇴사처럼 **데이터에 없는 정보** → 다른 컬럼으로 대신 답하면 오답
+- 2026-11-24 기준 main은 낱말 규칙(`agent/guard.py`) 때문에 `answer` 일부가 Gemini 호출 전에 막힌다 (이슈 #34 A 유형). 에이전트를 고친 뒤 이 묶음으로 개선과 회귀(거절해야 할 질문까지 답하게 됐는지)를 같이 본다.
+- 정답은 원본 CSV를 pandas로 직접 계산했고, 테스트가 다시 계산해 확인한다. 질문은 에이전트 결과를 보기 전에 고정했다. **결과를 보고 질문·정답을 바꾸지 않는다.**
+```powershell
+python -m eval.run_eval --set schema --out eval_schema.json --md eval_schema.md   # Gemini 최대 25회 (재계획 포함 시 더)
+```
+
 ### 처음 보는 질문 (`--set holdout`, `all`에 포함되지 않음)
 `general`과 같은 데이터 3종, **겹치지 않는 질문 17개** (`eval/holdout_questions.json`, 정답 `holdout_expected.json`).
 에이전트를 고친 뒤 `general` 21문제에만 맞춘 수정이 아닌지 확인하는 용도다. 2026-11-23 에이전트 수정 전에, 에이전트 결과를 보지 않고 만들었다.

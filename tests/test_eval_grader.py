@@ -593,3 +593,109 @@ def test_limit_question_quota_is_not_honest_refusal(datasets):
     runs = ev.run_questions(q, datasets, lambda _: FakeLLM(QUOTA_ERR), sleep=lambda s: None)
     r = ev.grade(runs)[0]
     assert r["outcome"] == ev.UNMEASURED and not r["pass"]
+
+
+# ---------------------------------------------------------------------------
+# 다른 구조 CSV 묶음 (schema, 이슈 #34 회귀): 컬럼 이름이 질문 낱말과 다른 데이터
+# ---------------------------------------------------------------------------
+SCHEMA_RIGHT = {
+    "C01": [("aggregate", {"op": "sum", "value_column": "매출액", "group_by": ["지역"]})],
+    "C02": [("aggregate", {"op": "sum", "value_column": "판매수량", "group_by": ["상품"]})],
+    "C03": [("aggregate", {"op": "sum", "value_column": "매출액", "group_by": ["주문일"], "period": "month"})],
+    "C04": [("aggregate", {"op": "sum", "value_column": "매출액", "group_by": ["지역"], "sort": "value_desc"})],
+    "C05": [("aggregate", {"op": "count", "group_by": ["category"]})],
+    "C06": [("aggregate", {"op": "count", "group_by": ["agent"],
+                           "filters": [{"column": "status", "op": "==", "value": "open"}]})],
+    "C07": [("aggregate", {"op": "count", "filters": [{"column": "status", "op": "==", "value": "open"}]})],
+    "C08": [("aggregate", {"op": "mean", "value_column": "resolution_hours", "group_by": ["category"]})],
+    "C09": [("aggregate", {"op": "sum", "value_column": "stock", "group_by": ["warehouse"]})],
+    "C10": [("aggregate", {"op": "mean", "value_column": "unit_price", "group_by": ["warehouse"]})],
+    "C11": [("aggregate", {"op": "sum", "value_column": "stock", "group_by": ["item"]})],
+    "C12": [("aggregate", {"op": "sum", "value_column": "stock"})],
+    "C13": [("aggregate", {"op": "count", "filters": [{"column": "stock", "op": "<", "compare_column": "safety_stock"}]})],
+    "C14": [("aggregate", {"op": "sum", "value_column": "stock", "multiply_by": "unit_price", "group_by": ["warehouse"]})],
+    "C15": [("aggregate", {"op": "mean", "value_column": "연봉", "group_by": ["부서"]})],
+    "C16": [("aggregate", {"op": "count", "group_by": ["직급"]})],
+    "C17": [("aggregate", {"op": "sum", "value_column": "초과근무시간", "group_by": ["부서"]})],
+}
+SCHEMA_REFUSE = [f"C{n}" for n in range(18, 26)]
+
+
+def schema_runs(datasets, calls_by_id, honest=False):
+    """엔진으로 직접 계산(에이전트 미경유)하거나, honest=True면 에이전트가 숫자 없이 거절한 것으로 채점."""
+    from engine import run_tool
+    qs = {q.id: q for q in ev.load_questions(("schema",))}
+    if honest:
+        return {r["id"]: r for r in ev.grade(ev.run_questions([qs[i] for i in calls_by_id], datasets,
+                                                               lambda _: FakeLLM(FakeLLM.calls(LIMIT), FakeLLM.calls(LIMIT))))}
+    runs = [ev.Run(qid, qs[qid].text, "ok", set="schema", stage="exec",
+                   calls=[{"tool": n, "params": p} for n, p in calls],
+                   results=[run_tool(datasets[qs[qid].dataset], n, p) for n, p in calls])
+            for qid, calls in calls_by_id.items()]
+    return {r["id"]: r for r in ev.grade(runs)}
+
+
+def test_schema_set_is_separate_and_generic(datasets):
+    assert "schema" in ev.EXTRA_SETS and "schema" not in ev.SETS
+    qs = ev.load_questions(("schema",))
+    exp = {a["id"]: a["kind"] for a in _json.loads(ev.SCHEMA_EXPECTED.read_text(encoding="utf-8"))["answers"]}
+    assert len(qs) == 25 and {q.id for q in qs} == set(exp) == set(SCHEMA_RIGHT) | set(SCHEMA_REFUSE)
+    assert all(exp[i] == "answer" for i in SCHEMA_RIGHT) and all(exp[i] == "refuse" for i in SCHEMA_REFUSE)
+    assert all(datasets[k].kind == "generic" for k in ev.SCHEMA_FILES)  # 인사 표도 표준 직원 표로 오인하지 않음
+    other = {q.text for q in ev.load_questions(("general", "holdout"))}
+    assert not ({q.text for q in qs} & other)
+
+
+def test_schema_expected_matches_raw_csv():
+    """정답 파일 = 원본 CSV를 pandas로 직접 계산한 값 (엔진 코드 미사용, ₩·쉼표는 직접 제거)."""
+    from decimal import ROUND_HALF_UP, Decimal
+
+    import pandas as pd
+
+    def num(v):
+        v = float(v)
+        return int(v) if v.is_integer() else float(Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def m(ser):
+        return {str(a): num(b) for a, b in ser.items()}
+
+    d = ev.SCHEMA_DIR
+    s = pd.read_csv(d / "sales_kr.csv")
+    t = pd.read_csv(d / "tickets_en.csv")
+    k = pd.read_csv(d / "stock_semicolon.csv", sep=";")
+    k["unit_price"] = k["unit_price"].str.replace("₩", "").str.replace(",", "").astype(int)
+    h = pd.read_csv(d / "hr_staff.csv")
+    reg = s.groupby("지역")["매출액"].sum()
+    want = {
+        "C01": m(reg), "C02": m(s.groupby("상품")["판매수량"].sum()),
+        "C03": m(s.groupby(s["주문일"].str[:7])["매출액"].sum()),
+        "C05": m(t["category"].value_counts()), "C06": m(t[t["status"] == "open"]["agent"].value_counts()),
+        "C08": m(t.groupby("category")["resolution_hours"].mean().dropna()),
+        "C09": m(k.groupby("warehouse")["stock"].sum()), "C10": m(k.groupby("warehouse")["unit_price"].mean()),
+        "C11": m(k.groupby("item")["stock"].sum()),
+        "C14": m((k["stock"] * k["unit_price"]).groupby(k["warehouse"]).sum()),
+        "C15": m(h.groupby("부서")["연봉"].mean()), "C16": m(h["직급"].value_counts()),
+        "C17": m(h.groupby("부서")["초과근무시간"].sum()),
+    }
+    exp = {a["id"]: a["checks"][0] for a in _json.loads(ev.SCHEMA_EXPECTED.read_text(encoding="utf-8"))["answers"] if a["checks"]}
+    for qid, w in want.items():
+        assert exp[qid]["equals"] == w, qid
+    assert exp["C04"]["id"] == reg.idxmax() and exp["C04"]["value"] == reg.max()
+    assert exp["C07"]["equals"] == (t["status"] == "open").sum()
+    assert exp["C12"]["equals"] == k["stock"].sum()
+    assert exp["C13"]["equals"] == (k["stock"] < k["safety_stock"]).sum()
+
+
+def test_schema_engine_can_answer(datasets):
+    """answer 17개는 맞는 도구·컬럼을 고르면 엔진이 정답을 낸다 (실패는 에이전트 쪽 문제임을 보장)."""
+    report = schema_runs(datasets, SCHEMA_RIGHT)
+    wrong = {k: r["reason"] for k, r in report.items() if r["outcome"] != "정답"}
+    assert not wrong
+
+
+def test_schema_refuse_honest_passes_and_substitute_fails(datasets):
+    report = schema_runs(datasets, {i: None for i in SCHEMA_REFUSE}, honest=True)
+    assert all(r["outcome"] == "정직한 거절" for r in report.values())
+    # "고객별 티켓 수"를 담당자(agent)로 대신 세면 대체 분석(오답)
+    sub = schema_runs(datasets, {"C18": [("aggregate", {"op": "count", "group_by": ["agent"]})]})["C18"]
+    assert not sub["pass"] and sub["outcome"] == "대체 분석"
