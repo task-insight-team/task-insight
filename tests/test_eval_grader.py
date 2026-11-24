@@ -501,3 +501,79 @@ def test_general_g14_answerable_with_compare_column(datasets):
     calls = [("aggregate", {"op": "count", "filters": [{"column": "수량", "op": "<", "compare_column": "안전재고"}]})]
     r = engine_runs(datasets, {"G14": calls})["G14"]
     assert r["pass"] and r["outcome"] == "정답", r["reason"]
+
+
+# ---------------------------------------------------------------------------
+# Gemini 한도 초과(429): 오답이 아니라 다시 시도 → 그래도 안 되면 '측정 못 함' (정답률 분모에서 제외)
+# ---------------------------------------------------------------------------
+QUOTA_ERR = LLMError("quota", "429 RESOURCE_EXHAUSTED")
+
+
+def scripted(*attempts):
+    """질문을 실행할 때마다(재시도 포함) 다음 FakeLLM 스크립트를 쓴다. 실행 횟수는 .count에 남는다."""
+    def factory(_q):
+        factory.count += 1
+        return FakeLLM(*attempts[min(factory.count - 1, len(attempts) - 1)])
+    factory.count = 0
+    return factory
+
+
+def run_quota(datasets, ids, factory, **kw):
+    waits = []
+    qs = [q for q in ev.load_questions() if q.id in ids]
+    runs = ev.run_questions(qs, datasets, factory, sleep=waits.append, **kw)
+    return runs, ev.grade(runs), waits
+
+
+def test_quota_then_success_is_retried(datasets):
+    factory = scripted([QUOTA_ERR], [FakeLLM.calls(RIGHT["Q1"])])
+    runs, report, waits = run_quota(datasets, {"Q1"}, factory, quota_wait=45)
+    assert report[0]["pass"] and report[0]["outcome"] == "정답" and report[0]["retries"] == 1
+    assert waits == [45] and factory.count == 2
+
+
+def test_quota_swallowed_in_replan_is_still_retried(datasets):
+    """재계획 호출의 한도 초과는 에이전트가 삼키고 첫 결과를 쓴다 → 그대로 두면 오답처럼 보인다. eval은 다시 돌린다."""
+    wrong_then_quota = [FakeLLM.calls(("calculate_completion_rate", {})), QUOTA_ERR]
+    factory = scripted(wrong_then_quota, [FakeLLM.calls(RIGHT["Q1"])])
+    runs, report, _ = run_quota(datasets, {"Q1"}, factory)
+    assert report[0]["pass"] and runs[0].retries == 1 and factory.count == 2
+
+
+def test_quota_until_the_end_is_unmeasured(datasets):
+    factory = scripted([QUOTA_ERR])
+
+    def by_question(q):  # Q1은 계속 한도 초과, Q2는 정상
+        return factory(q) if q.id == "Q1" else FakeLLM(FakeLLM.calls(RIGHT["Q2"]))
+
+    runs, report, waits = run_quota(datasets, {"Q1", "Q2"}, by_question, quota_retries=2)
+    q1, q2 = report
+    assert q1["status"] == ev.QUOTA and q1["outcome"] == ev.UNMEASURED and not q1["measured"] and not q1["pass"]
+    assert q1["retries"] == 2 and len(waits) == 2 and factory.count == 3
+    assert q2["pass"] and q2["measured"]
+    assert ev.score_text(report) == "1/1 (측정 못 함 1)"
+    md = ev.summary_md(report)
+    assert "| core | 1/1 (측정 못 함 1) |" in md and "| Q1 |" in md and "| - | 측정 못 함 |" in md
+
+
+def test_quota_streak_stops_remaining_questions(datasets):
+    factory = scripted([QUOTA_ERR])
+    runs, report, _ = run_quota(datasets, {"Q1", "Q2", "Q3", "Q4"}, factory, quota_retries=0, quota_stop_after=3)
+    assert [r.status for r in runs] == [ev.QUOTA] * 4
+    assert factory.count == 3 and "실행하지 않았습니다" in runs[3].message  # 4번째는 LLM을 부르지 않음
+    assert all(r["outcome"] == ev.UNMEASURED for r in report)
+
+
+def test_other_llm_errors_are_not_retried(datasets):
+    factory = scripted([LLMError("server", "503")], [FakeLLM.calls(RIGHT["Q1"])])
+    runs, report, waits = run_quota(datasets, {"Q1"}, factory)
+    assert report[0]["outcome"] == "오류" and report[0]["measured"] and not waits and factory.count == 1
+
+
+def test_limit_question_quota_is_not_honest_refusal(datasets):
+    """한계 질문은 숫자 없이 끝나면 '정직한 거절'로 통과하지만, 한도 초과로 끝난 건 측정 못 함이다.
+    (G15처럼 LLM 호출 전에 사전 차단되는 질문은 한도와 무관하게 정직한 거절 그대로)"""
+    q = [x for x in ev.load_questions(("general",)) if x.id == "G16"]
+    runs = ev.run_questions(q, datasets, lambda _: FakeLLM(QUOTA_ERR), sleep=lambda s: None)
+    r = ev.grade(runs)[0]
+    assert r["outcome"] == ev.UNMEASURED and not r["pass"]
