@@ -242,3 +242,55 @@ def test_compare_column_errors():
         {"column": "수량", "op": "<", "compare_column": "창고"}]}).error
     assert "없" in run_tool(ds, "aggregate", {"op": "count", "filters": [
         {"column": "수량", "op": "<", "compare_column": "없는컬럼"}]}).error
+
+
+# ---------------------------------------------------------------------------
+# 계산 컬럼: aggregate multiply_by (값 × 곱할 컬럼), calculate_ratio percent=False (×100 없는 나눗셈)
+# ---------------------------------------------------------------------------
+STOCK_VALUE = "품목,창고,수량,단가,비고\nA,평택,10,100,a\nB,평택,5,,b\nC,김해,2,300,c\nD,김해,,50,d\nE,김해,4,25,e\n"
+
+
+def test_multiply_by_sum_total_and_grouped():
+    ds = load(STOCK_VALUE).dataset
+    r = run_tool(ds, "aggregate", {"op": "sum", "value_column": "수량", "multiply_by": "단가"})
+    assert r.ok and r.value == 1700 and r.rows == [{"구분": "전체", "합계(수량×단가)": 1700.0}]
+    assert r.used_rows == 3 and "수량×단가" in r.basis and "빈칸" in r.basis  # B·D는 한쪽이 빈칸이라 제외
+    r = run_tool(ds, "aggregate", {"op": "sum", "value_column": "수량", "multiply_by": "단가",
+                                   "group_by": ["창고"], "sort": "value_desc"})
+    assert r.rows == [{"창고": "평택", "합계(수량×단가)": 1000.0}, {"창고": "김해", "합계(수량×단가)": 700.0}]
+    r = run_tool(ds, "aggregate", {"op": "max", "value_column": "수량", "multiply_by": "단가"})
+    assert r.value == 1000 and "최댓값(수량×단가)" in r.rows[0]
+
+
+def test_multiply_by_errors_and_source_unchanged():
+    ds = load(STOCK_VALUE).dataset
+    before = ds.main.copy()
+    assert "count" in run_tool(ds, "aggregate", {"op": "count", "multiply_by": "단가"}).error
+    assert "숫자 컬럼이 아니" in run_tool(ds, "aggregate", {"op": "sum", "value_column": "수량",
+                                                          "multiply_by": "비고"}).error
+    assert "없습니다" in run_tool(ds, "aggregate", {"op": "sum", "value_column": "수량",
+                                                    "multiply_by": "없는컬럼"}).error
+    assert ds.main.equals(before) and "_calc" not in ds.main.columns
+
+
+def test_multiply_by_absent_keeps_output():
+    ds = load(STOCK_VALUE).dataset
+    r = run_tool(ds, "aggregate", {"op": "sum", "value_column": "수량", "group_by": ["창고"]})
+    assert r.rows == [{"창고": "김해", "합계(수량)": 6.0}, {"창고": "평택", "합계(수량)": 15.0}]
+    assert "계산식" not in r.basis
+
+
+def test_column_ratio_without_percent():
+    r = ratio({"kind": "column_ratio", "value_column": "prod", "denominator_column": "bad", "percent": False,
+               "group_by": ["line"]})
+    assert r.ok and r.unit == "" and "×100 하지 않음" in r.basis
+    assert {x["line"]: x["값(prod÷bad)"] for x in r.rows} == {"A": 28.57, "B": 100.0, "C": None}
+    assert r.value == 37.5  # 600 ÷ 16
+    assert ratio({"kind": "column_ratio", "value_column": "bad", "denominator_column": "prod"}).unit == "%"  # 기본값은 그대로
+
+
+def test_percent_false_only_for_column_ratio():
+    for kind, extra in (("share", {"group_by": ["line"]}),
+                        ("condition_rate", {"condition": [{"column": "status", "op": "==", "value": "완료"}]})):
+        r = ratio({"kind": kind, "percent": False, **extra})
+        assert not r.ok and "column_ratio에서만" in r.error

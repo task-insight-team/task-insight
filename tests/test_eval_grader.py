@@ -501,3 +501,19 @@ def test_general_g14_answerable_with_compare_column(datasets):
     calls = [("aggregate", {"op": "count", "filters": [{"column": "수량", "op": "<", "compare_column": "안전재고"}]})]
     r = engine_runs(datasets, {"G14": calls})["G14"]
     assert r["pass"] and r["outcome"] == "정답", r["reason"]
+
+
+# ---------------------------------------------------------------------------
+# 계산 컬럼(aggregate multiply_by, calculate_ratio percent=False)으로 답할 수 있게 된 한계 질문
+# ---------------------------------------------------------------------------
+def test_general_g15_answerable_with_multiply_by(datasets):
+    calls = [("aggregate", {"op": "sum", "value_column": "수량", "multiply_by": "단가", "group_by": ["창고"]})]
+    r = engine_runs(datasets, {"G15": calls})["G15"]
+    assert r["pass"] and r["outcome"] == "정답", r["reason"]
+
+
+def test_holdout_h05_answerable_with_ratio_without_percent(datasets):
+    calls = [("calculate_ratio", {"kind": "column_ratio", "value_column": "revenue", "denominator_column": "units",
+                                  "percent": False, "group_by": ["region"]})]
+    r = holdout_engine_runs(datasets, {"H05": calls})["H05"]
+    assert r["pass"] and r["outcome"] == "정답", r["reason"]

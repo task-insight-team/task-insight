@@ -162,10 +162,11 @@ class AggregateParams(BaseModel):
     sort: Literal["group", "value_desc", "value_asc"] = "group"
     top_n: Optional[int] = Field(default=None, ge=1)
     period: Optional[Literal["month"]] = None  # "month"면 group_by의 날짜 컬럼을 월(YYYY-MM)로 묶는다 (월별 추이)
+    multiply_by: Optional[str] = None  # 주면 행마다 value_column × multiply_by를 계산한 뒤 op 적용 (예: 재고금액 = 수량×단가). count와 함께 쓸 수 없음
 
 
 class RatioParams(BaseModel):
-    """비율(%) 계산. 결과는 항상 % 단위.
+    """비율 계산. 기본은 % 단위 (column_ratio에서 percent=False면 ×100 없이 나눈 값, 예: 판매 단가).
 
     - share: 그룹별 비중 = 그룹 합계(또는 건수) / 전체 합계(또는 건수). group_by 필수. 예: 지역별 매출 비중
     - column_ratio: 합계(value_column) / 합계(denominator_column). 예: 불량률 = 불량수량 / 생산수량
@@ -181,6 +182,7 @@ class RatioParams(BaseModel):
     period: Optional[Literal["month"]] = None  # "month"면 group_by의 날짜 컬럼을 월(YYYY-MM)로 묶는다
     sort: Optional[Literal["group", "value_desc", "value_asc"]] = None  # 생략: share는 큰 순, 나머지는 그룹 순
     top_n: Optional[int] = Field(default=None, ge=1)
+    percent: bool = True  # column_ratio 전용. False면 ×100 하지 않음 (예: 판매 단가 = 합계(매출)÷합계(판매량)). share·condition_rate에 False면 오류
 
 
 class CountOverdueParams(BaseModel):

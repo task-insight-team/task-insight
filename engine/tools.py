@@ -274,7 +274,9 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
         return _err(tool, p, f"'{p.table}' 표가 없습니다. 해당 파일을 함께 올려 주세요.")
     data = _base(df)
 
-    value_col = None
+    if p.multiply_by and p.op == "count":
+        return _err(tool, p, "개수(count)에는 곱할 컬럼(multiply_by)을 쓸 수 없습니다. 합계·평균·최댓값·최솟값과 함께 쓰세요.")
+    value_col = mul_col = None
     if p.op != "count":  # 합계·평균·최댓값·최솟값은 숫자 값 컬럼이 필요
         if not p.value_column:
             return _err(tool, p, f"{OP_LABEL[p.op]}을 구하려면 값 컬럼(value_column)이 필요합니다.")
@@ -283,6 +285,12 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
             return _missing_col(tool, p, p.value_column, df)
         if not pd.api.types.is_numeric_dtype(data[value_col]):
             return _err(tool, p, f"'{p.value_column}'은 숫자 컬럼이 아니라 {OP_LABEL[p.op]}을 구할 수 없습니다.")
+        if p.multiply_by:  # 계산 컬럼: 행마다 value_column × multiply_by
+            mul_col = _resolve(data, p.multiply_by)
+            if mul_col is None:
+                return _missing_col(tool, p, p.multiply_by, df)
+            if not pd.api.types.is_numeric_dtype(data[mul_col]):
+                return _err(tool, p, f"'{p.multiply_by}'은 숫자 컬럼이 아니라 곱할 수 없습니다.")
 
     groups = []
     for g in p.group_by:
@@ -297,13 +305,19 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
 
     if value_col is not None:
         data = data.loc[data[value_col].notna()]
+    value_name = _show(value_col) if value_col else ""
+    if mul_col is not None:  # 둘 중 하나라도 빈칸이면 제외. 원본은 고치지 않고 복사본에 계산 컬럼을 붙인다
+        data = data.loc[data[mul_col].notna()]
+        value_name = f"{_show(value_col)}×{_show(mul_col)}"
+        data = data.assign(_calc=data[value_col] * data[mul_col])
+        value_col = "_calc"
     data, shown, bad = _apply_period(tool, p, data, groups)
     if bad:
         return bad
     for g in groups:
         data = data.loc[data[g].notna()]
 
-    label = f"{OP_LABEL[p.op]}({_show(value_col)})" if value_col else "개수(건)"
+    label = f"{OP_LABEL[p.op]}({value_name})" if value_col else "개수(건)"
     if data.empty:  # 대상은 맞는데 조건에 맞는 행이 0개
         cond = f" (조건: {' / '.join(desc)})" if desc else ""
         if p.op in ("mean", "max", "min"):  # 0건이면 평균·최댓값·최솟값은 정의되지 않음 (합계·개수는 0)
@@ -311,7 +325,8 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
         rows = [] if groups else [{"구분": "전체", label: 0}]
         return ToolResult(tool=tool, params=p.model_dump(), rows=rows, value=0.0,
                           unit="건" if p.op == "count" else "",
-                          basis=f"{OP_LABEL[p.op]} 기준, 조건에 맞는 행 0개{cond}", used_rows=0)
+                          basis=f"{OP_LABEL[p.op]}({value_name}) 기준, 조건에 맞는 행 0개{cond}" if mul_col is not None
+                          else f"{OP_LABEL[p.op]} 기준, 조건에 맞는 행 0개{cond}", used_rows=0)
     fmt = int if p.op == "count" else r
     total = len(data) if p.op == "count" else getattr(data[value_col], p.op)()
     if groups:
@@ -327,6 +342,8 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
         rows = [{"구분": "전체", label: fmt(total)}]
 
     basis = f"{OP_LABEL[p.op]} 기준"
+    if mul_col is not None:
+        basis += f", 계산식: 행마다 {value_name}를 계산한 뒤 {OP_LABEL[p.op]} ({value_name.replace('×', '·')} 중 빈칸인 행 제외)"
     if groups:
         basis += f", {'·'.join(shown[g] for g in groups)}별"
     if desc:
@@ -359,6 +376,8 @@ def calculate_ratio(ds: Dataset, p: RatioParams) -> ToolResult:
             return None, _err(tool, p, f"'{name}'은 숫자 컬럼이 아니라 {role}로 쓸 수 없습니다.")
         return col, None
 
+    if not p.percent and p.kind != "column_ratio":
+        return _err(tool, p, "percent=false(×100 하지 않는 나눗셈)는 column_ratio에서만 쓸 수 있습니다. 비중·조건 비율은 항상 %입니다.")
     num_col = den_col = None
     if p.kind == "share":
         if not p.group_by:
@@ -400,6 +419,7 @@ def calculate_ratio(ds: Dataset, p: RatioParams) -> ToolResult:
         return _err(tool, p, f"조건에 맞는 데이터가 0건이라 비율을 계산할 수 없습니다{cond}.")
 
     key = RATIO_KEY[p.kind]
+    scale = 100 if p.percent else 1
     if p.kind == "condition_rate":
         hit, cdesc, bad = _apply_filters(tool, p, df, data, p.condition)
         if bad:
@@ -412,6 +432,9 @@ def calculate_ratio(ds: Dataset, p: RatioParams) -> ToolResult:
         num, den = data[num_col], data[den_col]
         num_label, den_label, fmt = f"합계({_show(num_col)})", f"합계({_show(den_col)})", r
         formula = f"비율 = 합계({_show(num_col)}) ÷ 합계({_show(den_col)}) × 100"
+        if not p.percent:  # 예: 판매 단가 = 합계(매출) ÷ 합계(판매량)
+            key = f"값({_show(num_col)}÷{_show(den_col)})"
+            formula = f"값 = 합계({_show(num_col)}) ÷ 합계({_show(den_col)}) (×100 하지 않음, 행별 값의 평균 아님)"
     else:
         num = data[num_col] if num_col else pd.Series(1, index=data.index)
         den = None
@@ -424,7 +447,7 @@ def calculate_ratio(ds: Dataset, p: RatioParams) -> ToolResult:
         return _err(tool, p, f"분모 합계가 0이라 비율을 계산할 수 없습니다{cond}.")
 
     def pct(a: float, b: float) -> Optional[float]:
-        return None if b == 0 else r(a / b * 100)
+        return None if b == 0 else r(a / b * scale)
 
     if groups:
         gnum = num.groupby([data[g] for g in groups], sort=True).sum()
@@ -458,7 +481,7 @@ def calculate_ratio(ds: Dataset, p: RatioParams) -> ToolResult:
     basis += f", {len(data)}행 사용"
     value = None if p.kind == "share" else pct(total_num, total_den)
     return ToolResult(tool=tool, params=p.model_dump(), rows=_clean_rows(rows), value=value,
-                      unit="%", basis=basis, used_rows=len(data))
+                      unit="%" if p.percent else "", basis=basis, used_rows=len(data))
 
 
 # ---------------------------------------------------------------------------
