@@ -26,6 +26,35 @@ python -m eval.run_eval --set demo                                          # �
 python -m eval.run_eval --set all --out eval_all.json --md eval_report.md   # 전부 (Gemini 약 35~45회)
 ```
 시연 문장을 바꾸면 `eval/extra_questions.json`의 D1~D5도 같이 바꿔 둔다.
+
+### 범용성 측정 (`--set general`, `all`에 포함되지 않음)
+kafe·sample.csv가 아닌 **다른 업종 데이터 3종**(`data/general/`)으로 어디까지 답하고, 못 하는 것은 정직하게 거절하는지 잰다.
+| 데이터 | 내용 |
+|---|---|
+| `sales_2026.csv` | 과제 문서의 현실 규모 데이터 (12개월 × 3지역). 정답도 과제 문서 값 |
+| `inventory.csv` | 가상 재고 (3개 창고 18개 품목, 한글 컬럼, 일 단위 입고일) |
+| `support_tickets.csv` | 가상 고객지원 문의 26건 (2026-10~11, 처리시간 빈칸 포함) |
+
+질문 21개 (`eval/general_questions.json`), 정답과 종류는 `eval/general_expected.json`:
+| 종류 | 의미 | 통과 |
+|---|---|---|
+| `answer` | 지금 도구로 답할 수 있음 (엔진으로 확인됨) | 정답 |
+| `limit` | 지금 도구의 한계 (비중, 월별 묶기, 컬럼끼리 비교, 계산 컬럼 등) | 정답 **또는 정직한 거절**. 틀린 숫자는 오답 |
+| `refuse` | 데이터에 없는 것 | 숫자 없이 거절 |
+
+결과는 정답 / 정직한 거절 / 오답 / 대체 분석 / 답하지 못함 / 오류로 분류된다 (`--md` 표에 종류별 집계).
+```powershell
+python -m eval.run_eval --set general --out eval_general.json --md eval_general.md   # Gemini 최대 21회
+```
+정답 값은 테스트가 원본 CSV(pandas)로 다시 계산해 확인한다 (엔진 결과를 옮겨 적지 않음).
+
+### 처음 보는 질문 (`--set holdout`, `all`에 포함되지 않음)
+`general`과 같은 데이터 3종, **겹치지 않는 질문 17개** (`eval/holdout_questions.json`, 정답 `holdout_expected.json`).
+에이전트를 고친 뒤 `general` 21문제에만 맞춘 수정이 아닌지 확인하는 용도다. 2026-11-23 에이전트 수정 전에, 에이전트 결과를 보지 않고 만들었다.
+**에이전트 결과를 보고 이 질문이나 정답을 바꾸지 않는다.** 바꾸면 과적합 확인 용도가 사라진다.
+```powershell
+python -m eval.run_eval --set holdout --out eval_holdout.json --md eval_holdout.md   # Gemini 최대 17회
+```
 `--md`는 제출용 측정 표(묶음별 정답 수, 질문당 시간 평균·최대, LLM 호출 수)와 질문별 결과를 저장합니다.
 LLM 호출 수는 에이전트가 요청한 횟수입니다 (재계획 포함, SDK 내부 재시도 제외).
 

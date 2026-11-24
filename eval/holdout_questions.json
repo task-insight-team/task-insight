@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "notice": "질문 문장만. 정답·채점 규칙은 eval/holdout_expected.json (채점 단계에서만 읽음)",
+    "purpose": "처음 보는 질문 (general과 겹치지 않음). 에이전트를 고친 뒤 general 21문제에만 맞춘 수정이 아닌지 확인한다. 2026-11-23, 에이전트 수정 전에 에이전트 결과를 보지 않고 만들었다",
+    "rule": "에이전트 수정 결과를 보고 이 질문이나 정답을 바꾸지 않는다"
+  },
+  "questions": [
+    {"id": "H01", "dataset": "sales2026", "question": "판매량이 가장 많은 지역은?"},
+    {"id": "H02", "dataset": "sales2026", "question": "대구의 연간 매출 합계는?"},
+    {"id": "H03", "dataset": "sales2026", "question": "10월 지역별 매출은?"},
+    {"id": "H04", "dataset": "sales2026", "question": "9월 매출은 8월보다 얼마나 늘었어?"},
+    {"id": "H05", "dataset": "sales2026", "question": "지역별 판매 단가(매출÷판매량)는?"},
+    {"id": "H06", "dataset": "sales2026", "question": "광고비 대비 매출이 가장 좋은 달은?"},
+
+    {"id": "H07", "dataset": "inventory", "question": "창고별 품목 수는?"},
+    {"id": "H08", "dataset": "inventory", "question": "완제품의 평균 재고 수량은?"},
+    {"id": "H09", "dataset": "inventory", "question": "분류별 최고 단가는?"},
+    {"id": "H10", "dataset": "inventory", "question": "평택 창고 품목의 평균 단가는?"},
+    {"id": "H11", "dataset": "inventory", "question": "11월에 입고된 품목은 몇 개야?"},
+
+    {"id": "H12", "dataset": "support", "question": "채널별 문의 건수는?"},
+    {"id": "H13", "dataset": "support", "question": "제품불량 문의의 평균 처리시간은?"},
+    {"id": "H14", "dataset": "support", "question": "처리상태별 문의 건수는?"},
+    {"id": "H15", "dataset": "support", "question": "평균 처리시간이 가장 긴 문의 유형은?"},
+    {"id": "H16", "dataset": "support", "question": "상담원별 처리 건수는?"},
+    {"id": "H17", "dataset": "support", "question": "10월 대비 11월 처리완료 비율은 어떻게 변했어?"}
+  ]
+}

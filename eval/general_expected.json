@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "notice": "채점 전용. 에이전트·LLM 프롬프트에 넣지 않는다",
+    "kinds": {
+      "answer": "지금 도구로 답할 수 있어야 함. 정답과 일치해야 통과",
+      "refuse": "데이터에 없는 것을 물음. 숫자 없이 지원 불가·되묻기로 끝나야 통과",
+      "limit": "지금 도구의 한계를 재는 질문. 정답이거나 정직하게 거절하면 통과, 틀린 숫자를 내면 오답"
+    },
+    "source": "sales2026은 과제 문서의 정답(총매출 80,910, 서울 42,040, 부산 상반기 12,950 → 하반기 9,030, 대구 1월 870 → 12월 1,970 등). inventory·support는 원본 CSV를 pandas로 직접 계산. tests/test_eval_grader.py가 원본 CSV로 다시 계산해 확인한다",
+    "found": "found: 결과 값(value)이나, key 행(첫 컬럼 = key)의 숫자 칸 중 하나가 equals이면 통과 (도구를 어떻게 골랐든 그 숫자가 화면에 나오면 됨)"
+  },
+  "answers": [
+    {"id": "G01", "kind": "answer", "checks": [{"type": "mapping", "equals": {"서울": 42040, "부산": 21980, "대구": 16890}}]},
+    {"id": "G02", "kind": "answer", "checks": [{"type": "found", "equals": 733}]},
+    {"id": "G03", "kind": "answer", "checks": [{"type": "extreme", "which": "max", "id": "2026-12", "column_has": "revenue", "value": 7860}]},
+    {"id": "G04", "kind": "answer", "checks": [{"type": "extreme", "which": "min", "id": "2026-03", "column_has": "revenue", "value": 5950}]},
+    {"id": "G05", "kind": "answer", "checks": [{"type": "found", "equals": 6.22},
+                                               {"type": "row", "key": "부산", "column_has": "증감률", "value": 3.8}]},
+    {"id": "G06", "kind": "answer", "checks": [{"type": "found", "key": "서울", "equals": 3503.33}]},
+    {"id": "G07", "kind": "limit", "checks": [{"type": "found", "key": "부산", "equals": 12950},
+                                              {"type": "found", "key": "부산", "equals": 9030}]},
+    {"id": "G08", "kind": "limit", "checks": [{"type": "row", "key": "대구", "column_has": "증감률", "value": 126.44}]},
+    {"id": "G09", "kind": "limit", "checks": [{"type": "mapping", "column_has": "비중", "equals": {"서울": 51.96, "부산": 27.17, "대구": 20.88}}]},
+    {"id": "G10", "kind": "refuse", "checks": []},
+
+    {"id": "G11", "kind": "answer", "checks": [{"type": "mapping", "equals": {"평택": 2567, "김해": 3033, "대전": 1165}}]},
+    {"id": "G12", "kind": "answer", "checks": [{"type": "mapping", "equals": {"원자재": 1050, "부품": 5057.14, "완제품": 68166.67}}]},
+    {"id": "G13", "kind": "answer", "checks": [{"type": "found", "key": "원자재", "equals": 4620}]},
+    {"id": "G14", "kind": "limit", "checks": [{"type": "found", "equals": 8}]},
+    {"id": "G15", "kind": "limit", "checks": [{"type": "extreme", "which": "max", "id": "평택", "value": 9427000}]},
+    {"id": "G16", "kind": "limit", "checks": [{"type": "mapping", "equals": {"2026-09": 2505, "2026-10": 2112, "2026-11": 2148}}]},
+
+    {"id": "G17", "kind": "answer", "checks": [{"type": "mapping", "equals": {"배송": 8, "제품불량": 8, "결제": 5, "반품": 5}}]},
+    {"id": "G18", "kind": "answer", "checks": [{"type": "mapping", "equals": {"결제팀": 2.5, "물류팀": 6.0, "품질팀": 30.8}}]},
+    {"id": "G19", "kind": "answer", "checks": [{"type": "found", "equals": 16.67}]},
+    {"id": "G20", "kind": "limit", "checks": [{"type": "extreme", "which": "min", "id": "품질팀", "value": 62.5}]},
+    {"id": "G21", "kind": "refuse", "checks": []}
+  ]
+}

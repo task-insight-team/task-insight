@@ -152,9 +152,9 @@ class Filter(BaseModel):
 
 
 class AggregateParams(BaseModel):
-    """범용 집계: 합계·평균·개수. table로 직원·프로젝트 표도 집계할 수 있다."""
+    """범용 집계: 합계·평균·개수·최댓값·최솟값. table로 직원·프로젝트 표도 집계할 수 있다."""
     table: Literal["main", "employees", "projects"] = "main"  # main = 결합된 업무 표 또는 일반 CSV
-    op: Literal["sum", "mean", "count"]
+    op: Literal["sum", "mean", "count", "max", "min"]  # max·min: 값 컬럼의 최댓값·최솟값 (예: 분류별 최고 단가)
     value_column: Optional[str] = None  # count면 생략
     group_by: list[str] = Field(default_factory=list)
     filters: list[Filter] = Field(default_factory=list)

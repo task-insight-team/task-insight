@@ -37,7 +37,7 @@ class ToolSpec:
 
 TOOLS: dict[str, ToolSpec] = {
     "aggregate": ToolSpec(tools.aggregate, AggregateParams,
-        "합계(sum)·평균(mean)·개수(count). table(main/employees/projects), group_by, filters, sort, top_n. 일반 CSV에도 쓸 수 있다."),
+        "합계(sum)·평균(mean)·개수(count)·최댓값(max)·최솟값(min). table(main/employees/projects), group_by, filters, sort, top_n. 일반 CSV에도 쓸 수 있다."),
     "compare_periods": ToolSpec(tools.compare_periods, ComparePeriodsParams,
         "두 달(YYYY-MM)의 건수·합계·평균 비교, 증감과 증감률. previous 생략 시 전월. 일반 CSV에도 쓸 수 있다."),
     "count_overdue_tasks": ToolSpec(tools.count_overdue_tasks, CountOverdueParams,

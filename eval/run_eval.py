@@ -39,16 +39,27 @@ from engine import load_dataset  # noqa: E402
 
 KAFE_DIR = ROOT / "data" / "kafe"
 SAMPLE_CSV = ROOT / "data" / "sample.csv"
+GENERAL_DIR = ROOT / "data" / "general"
 KAFE_QUESTIONS = ROOT / "docs" / "kafe_questions.json"
 KAFE_ANSWERS = ROOT / "tests" / "fixtures" / "kafe" / "evaluation_answers.json"  # 2단계에서만 연다
 SAMPLE_QUESTIONS = Path(__file__).with_name("sample_questions.json")  # 과제 sample.csv 질문 문장
 SAMPLE_EXPECTED = Path(__file__).with_name("sample_expected.json")  # 그 정답. 2단계에서만 연다
 EXTRA_QUESTIONS = Path(__file__).with_name("extra_questions.json")  # 바꿔 말한 질문·답하면 안 되는 질문·시연 질문 (정답 값 없음)
 DEMO_EXPECTED = Path(__file__).with_name("demo_expected.json")  # 시연 질문 중 평가 정답에 없는 것. 2단계에서만 연다
-SETS = ("core", "paraphrase", "refuse", "demo")
+GENERAL_QUESTIONS = Path(__file__).with_name("general_questions.json")  # 다른 업종 데이터 질문 (범용성 측정)
+GENERAL_EXPECTED = Path(__file__).with_name("general_expected.json")  # 그 정답·종류. 2단계에서만 연다
+HOLDOUT_QUESTIONS = Path(__file__).with_name("holdout_questions.json")  # 처음 보는 질문 (수정 후 과적합 확인용)
+HOLDOUT_EXPECTED = Path(__file__).with_name("holdout_expected.json")  # 그 정답·종류. 2단계에서만 연다
+GENERAL_FILES = {"sales2026": "sales_2026.csv", "inventory": "inventory.csv", "support": "support_tickets.csv"}
+SETS = ("core", "paraphrase", "refuse", "demo")  # --set all = 이 묶음들 (발표 전 확인용, 호출 수 유지)
+EXTRA_SETS = ("general", "holdout")  # all에 넣지 않고 따로 돌리는 묶음 (Gemini 호출 절약)
+# 다른 업종 데이터 묶음: (질문 파일, 정답·종류 파일). 종류(answer·limit·refuse)별로 채점한다
+FILE_SETS = {"general": (GENERAL_QUESTIONS, GENERAL_EXPECTED), "holdout": (HOLDOUT_QUESTIONS, HOLDOUT_EXPECTED)}
 
 KAFE_AS_OF = "2026-11-19"
 SAMPLE_AS_OF = "2026-02-28"  # sample.csv 마지막 달. '전월 대비'의 기준 달이 2026-02가 되게 한다
+AS_OF = {"kafe": KAFE_AS_OF, "sample": SAMPLE_AS_OF,
+         "sales2026": "2026-12-31", "inventory": "2026-11-30", "support": "2026-11-30"}  # 데이터별 기준일
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +99,12 @@ def load_questions(sets: tuple = ("core",)) -> list[Question]:
         out += ([Question(q["id"], q["question"], "kafe", KAFE_AS_OF) for q in kafe]
                 + [Question(q["id"], q["question"], "sample", SAMPLE_AS_OF) for q in sample])
     extra = [q for q in json.loads(EXTRA_QUESTIONS.read_text(encoding="utf-8"))["questions"] if q["set"] in sets]
-    out += [Question(q["id"], q["question"], q["dataset"], KAFE_AS_OF if q["dataset"] == "kafe" else SAMPLE_AS_OF,
-                     q["set"], q.get("same_as")) for q in extra]
+    out += [Question(q["id"], q["question"], q["dataset"], AS_OF[q["dataset"]], q["set"], q.get("same_as"))
+            for q in extra]
+    for name, (qfile, _) in FILE_SETS.items():
+        if name in sets:
+            rows = json.loads(qfile.read_text(encoding="utf-8"))["questions"]
+            out += [Question(q["id"], q["question"], q["dataset"], AS_OF[q["dataset"]], name) for q in rows]
     return out
 
 
@@ -113,8 +128,9 @@ class _Counting:
 def load_datasets() -> dict:
     kafe = load_dataset({f"{n}.csv": KAFE_DIR / f"{n}.csv" for n in ("tasks", "employees", "projects")})
     sample = load_dataset({"sample.csv": SAMPLE_CSV})
-    assert kafe.ok and sample.ok, "데이터를 불러오지 못했습니다"
-    return {"kafe": kafe.dataset, "sample": sample.dataset}
+    general = {k: load_dataset({f: GENERAL_DIR / f}) for k, f in GENERAL_FILES.items()}
+    assert kafe.ok and sample.ok and all(g.ok for g in general.values()), "데이터를 불러오지 못했습니다"
+    return {"kafe": kafe.dataset, "sample": sample.dataset, **{k: g.dataset for k, g in general.items()}}
 
 
 def run_questions(questions: list[Question], datasets: dict, llm_factory: Optional[Callable[[Question], Any]] = None,
@@ -181,7 +197,25 @@ def check(results: list[ToolResult], spec: dict) -> tuple[bool, str]:
         return False, f"오류 사유에 '{spec['contains']}'가 없습니다"
 
     for r in ok_results:
-        if kind == "value":
+        if kind == "found":  # 결과 값이나 key 행의 숫자 칸 중 하나가 equals (도구를 어떻게 골랐든 화면에 그 숫자가 나오면 됨)
+            first = next(iter(r.rows[0])) if r.rows else None
+            if spec.get("key") is None and _close(_num(r.value), spec["equals"], tol):
+                return True, f"값 {r.value}"
+            if spec.get("key") is not None and len(r.rows) == 1 and str(r.rows[0].get(first)) in ("전체", spec["key"]) \
+                    and _close(_num(r.value), spec["equals"], tol):
+                return True, f"값 {r.value}"  # 조건(필터)으로 key만 계산한 경우
+            for x in r.rows:
+                if spec.get("key") is not None and str(x.get(first)) != spec["key"]:
+                    continue
+                if any(_close(_num(v), spec["equals"], tol) for k, v in x.items() if k != first):
+                    return True, f"{x.get(first)} 행에 {spec['equals']}"
+        elif kind == "row":  # key 행의 특정 컬럼 값
+            first = next(iter(r.rows[0])) if r.rows else None
+            for c in _columns(r.rows, spec.get("column_has")):
+                for x in r.rows:
+                    if str(x.get(first)) == spec["key"] and _close(_num(x.get(c)), spec["value"], tol):
+                        return True, f"{spec['key']}의 '{c}' {x.get(c)}"
+        elif kind == "value":
             if _close(_num(r.value), spec["equals"], tol):
                 return True, f"값 {r.value}"
             # 그룹별로 나눠 계산한 경우: 해당 컬럼 합계
@@ -228,10 +262,22 @@ def grade(runs: list[Run]) -> list[dict]:
     specs = kafe_specs(json.loads(KAFE_ANSWERS.read_text(encoding="utf-8")))
     for path in (SAMPLE_EXPECTED, DEMO_EXPECTED):
         specs.update({a["id"]: a["checks"] for a in json.loads(path.read_text(encoding="utf-8"))["answers"]})
+    kinds: dict[str, str] = {}
+    for name, (_, efile) in FILE_SETS.items():
+        if any(r.set == name for r in runs):
+            rows = json.loads(efile.read_text(encoding="utf-8"))["answers"]
+            specs.update({a["id"]: a["checks"] for a in rows})
+            kinds.update({a["id"]: a["kind"] for a in rows})
     report = []
     for run in runs:
         rules = specs.get(run.same_as or run.id, [])
-        if run.set == "refuse":  # 데이터에 없는 것을 물음: 숫자를 내면 오답
+        kind = kinds.get(run.id) if run.set in FILE_SETS else None
+        shown_ok = any(r.ok for r in run.results)
+        if kind == "limit" and not shown_ok:
+            # 한계 질문: 숫자 없이 정직하게 거절하면 통과 (API 오류는 오답)
+            ok = not (run.stage == "plan" and run.status == "error")
+            reasons = [f"정직한 거절 ({run.status}): {run.message}" if ok else f"오류 ({run.status}): {run.message}"]
+        elif run.set == "refuse" or kind == "refuse":  # 데이터에 없는 것을 물음: 숫자를 내면 오답
             shown = [c["tool"] for c, r in zip(run.calls, run.results) if r.ok]
             if shown:
                 ok, reasons = False, [f"답할 수 없는 질문인데 다른 분석을 실행해 결과를 냈습니다 ({', '.join(shown)})"]
@@ -248,16 +294,29 @@ def grade(runs: list[Run]) -> list[dict]:
         else:
             outcomes = [check(run.results, s) for s in rules]
             ok, reasons = bool(rules) and all(o for o, _ in outcomes), [m for _, m in outcomes]
-        report.append({"id": run.id, "set": run.set, "question": run.question, "pass": ok, "status": run.status,
-                       "calls": run.calls, "reason": "; ".join(reasons), "seconds": round(run.seconds, 1),
+        report.append({"id": run.id, "set": run.set, "kind": kind, "question": run.question, "pass": ok,
+                       "outcome": _outcome(run, ok, kind), "status": run.status, "calls": run.calls,
+                       "reason": "; ".join(reasons), "seconds": round(run.seconds, 1),
                        "llm_calls": run.llm_calls, "model": run.model})
     return report
+
+
+def _outcome(run: Run, ok: bool, kind: Optional[str]) -> str:
+    """결과 종류: 정답 / 정직한 거절 / 오답 / 대체 분석 / 답하지 못함 / 오류 (범용성 측정 분류용)."""
+    shown = any(r.ok for r in run.results)
+    if run.stage == "plan" and run.status == "error":
+        return "오류"
+    if ok:
+        return "정답" if shown else "정직한 거절"
+    if shown:
+        return "대체 분석" if (run.set == "refuse" or kind == "refuse") else "오답"
+    return "답하지 못함"
 
 
 def summary_md(report: list[dict]) -> str:
     """제출용 측정 표 (정확도·시간·LLM 호출 수)."""
     lines = ["| 묶음 | 정답 | 질문당 시간 (평균 / 최대) | LLM 호출 (합계 / 질문당 최대) |", "|---|---|---|---|"]
-    for s in SETS:
+    for s in (*SETS, *EXTRA_SETS):
         part = [r for r in report if r["set"] == s]
         if not part:
             continue
@@ -266,12 +325,23 @@ def summary_md(report: list[dict]) -> str:
         lines.append(f"| {s} | {sum(r['pass'] for r in part)}/{len(part)} | {sum(sec) / len(sec):.1f}초 / {max(sec):.1f}초 "
                      f"| {sum(calls)}회 / {max(calls)}회 |")
     models = sorted({r["model"] for r in report if r["model"]})
-    lines += ["", f"모델: {', '.join(models) or '-'} · 시간은 질문 1개의 계획(LLM)+실행(엔진) 전체",
-              "", "| ID | 질문 | 결과 | 도구 | 판정 |", "|---|---|---|---|---|"]
+    lines += ["", f"모델: {', '.join(models) or '-'} · 시간은 질문 1개의 계획(LLM)+실행(엔진) 전체"]
+    for name in FILE_SETS:  # 범용성 측정: 종류(answer·limit·refuse)별 결과 분류
+        part_set = [r for r in report if r["set"] == name]
+        if not part_set:
+            continue
+        lines += ["", f"범용성 측정 ({name}): 질문 종류별 결과", "",
+                  "| 종류 | 질문 수 | 정답 | 정직한 거절 | 오답 | 대체 분석 | 답하지 못함 | 오류 |", "|---|---|---|---|---|---|---|---|"]
+        for k in ("answer", "limit", "refuse"):
+            part = [r for r in part_set if r["kind"] == k]
+            if part:
+                cnt = {o: sum(r["outcome"] == o for r in part) for o in ("정답", "정직한 거절", "오답", "대체 분석", "답하지 못함", "오류")}
+                lines.append(f"| {k} | {len(part)} | " + " | ".join(str(v) for v in cnt.values()) + " |")
+    lines += ["", "| ID | 질문 | 결과 | 분류 | 도구 | 판정 |", "|---|---|---|---|---|---|"]
     for r in report:
         tools = ", ".join(c["tool"] for c in r["calls"]) or "-"
         reason = r["reason"].replace("|", "/").replace("\n", " ")[:80]
-        lines.append(f"| {r['id']} | {r['question']} | {'O' if r['pass'] else 'X'} | {tools} | {reason} |")
+        lines.append(f"| {r['id']} | {r['question']} | {'O' if r['pass'] else 'X'} | {r['outcome']} | {tools} | {reason} |")
     return "\n".join(lines) + "\n"
 
 
@@ -281,7 +351,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--only", nargs="*", help="이 ID만 실행 (예: Q1 Q4 S4)")
     ap.add_argument("--delay", type=float, default=2.0, help="질문 사이 대기 초 (무료 한도 보호)")
     ap.add_argument("--out", help="결과를 JSON으로 저장할 경로")
-    ap.add_argument("--set", default="core", choices=[*SETS, "all"], help="질문 묶음 (기본 core = 발표용 점수)")
+    ap.add_argument("--set", default="core", choices=[*SETS, *EXTRA_SETS, "all"],
+                    help="질문 묶음 (기본 core = 발표용 점수, all = core·paraphrase·refuse·demo, general·holdout은 따로)")
     ap.add_argument("--md", help="측정 표(정확도·시간·호출 수)를 마크다운으로 저장할 경로")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
@@ -302,6 +373,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         part = [r for r in report if r["set"] == s]
         if part:
             print(f"{s}: 정답 {sum(r['pass'] for r in part)}/{len(part)}")
+            if s in FILE_SETS:
+                counts = {}
+                for r in part:
+                    counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
+                print("  분류: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
     print(f"전체: 정답 {passed}/{len(report)} · LLM 호출 {sum(r['llm_calls'] for r in report)}회")
     if args.out:
         Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
