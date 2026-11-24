@@ -164,6 +164,7 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 #poc .later,#poc .risk{margin-top:18px;font-size:13px;line-height:1.7;color:var(--sub)}
 #poc .risk{color:var(--red)}
 #poc .go{display:inline-block;margin-top:24px;font-size:13px;font-weight:600;border-bottom:1px solid var(--red)}
+#poc .go[hidden]{display:none}
 
 /* trap */
 #trap{background:#000}
@@ -438,7 +439,7 @@ footer .logo{color:#fff}
   <ol></ol>
   <p class="later"></p>
   <p class="risk"></p>
-  <a class="go" href="#" target="_blank" rel="noopener">이슈 #46에서 전체 내용 보기 →</a>
+  <a class="go" href="#" target="_blank" rel="noopener" hidden></a>
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/lenis@1.1.13/dist/lenis.min.js"></script>
@@ -472,7 +473,7 @@ const DATA = {
   proposals: [
     { id:"EXT", name:"단계별 공정관리 확장 검토", type:"확장 검토", status:"검토중", image:"images/proposal-process.svg",
       lead:"선후행·크리티컬 패스·진척률(SPI) 도구를 설계 중 (검토 단계, 이슈 #46)",
-      issue:"https://github.com/task-insight-team/task-insight/issues/46",
+      issue:"https://github.com/task-insight-team/task-insight/issues/46", linkText:"이슈 #46에서 전체 내용 보기 →",
       scopeTitle:"1단계 PoC 범위",
       scopeNote:"선박·플랜트 같은 단계별 공정관리에 쓸 수 있는지 먼저 작게 검증합니다. 아직 구현된 기능이 아니며, 도구 이름과 일정은 확정이 아닙니다.",
       scope:[
@@ -597,7 +598,9 @@ DATA.proposals.forEach(p => {
     poc.querySelector("ol").innerHTML = p.scope.map(s => `<li>${s}</li>`).join("");
     poc.querySelector(".later").textContent = p.later;
     poc.querySelector(".risk").textContent = p.risk;
-    poc.querySelector("a").href = p.issue;
+    const link = poc.querySelector("a");  /* 항목마다 링크·문구를 받음. 링크가 없으면 숨김 */
+    link.hidden = !p.issue;
+    if (p.issue) { link.href = p.issue; link.textContent = p.linkText || "자세히 보기 →"; }
     poc.showModal();
   };
   c.addEventListener("click", open);
@@ -857,6 +860,8 @@ scenes.forEach((s, i) => {
 });
 const current = () => { const y = scrollY + innerHeight * .5; let idx = 0; scenes.forEach((s, i) => { if (s.offsetTop <= y) idx = i; }); return idx; };
 addEventListener("keydown", e => {
+  if (document.querySelector("dialog[open]")) return;                        // 팝업이 열려 있으면 장면 이동 안 함
+  if (e.target.closest && e.target.closest(".card.proposal")) return;       // 카드 위의 Space/Enter는 카드가 처리
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
   if (e.key === "ArrowRight" || e.key === "PageDown" || e.code === "Space") { e.preventDefault(); goTo(scenes[Math.min(current() + 1, scenes.length - 1)]); }
