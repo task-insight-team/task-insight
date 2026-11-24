@@ -114,6 +114,13 @@ def _new_tool_guidance() -> str:
                   "  · 전체 대비 비중·점유율 → kind=share, value_column=합계할 값 (없으면 건수 비중)"]
     if "period" in AggregateParams.model_fields:
         lines.append("- 일 단위 날짜로 월별 추이·월별 합계를 물으면 aggregate(group_by=[날짜 컬럼], period='month'). 월별을 묻지 않으면 period를 쓰지 않는다.")
+    if "multiply_by" in AggregateParams.model_fields:
+        lines.append("- 금액처럼 두 숫자 컬럼의 곱이 필요한데 그 값의 컬럼이 없으면 aggregate(op=sum, value_column=수량, multiply_by=단가) "
+                     "(예: 창고별 재고 금액 = 현재수량 × 단가). 질문이 금액·곱셈을 묻지 않으면 multiply_by를 절대 쓰지 않는다.")
+    from contracts import RatioParams
+    if "percent" in RatioParams.model_fields:
+        lines.append("- 단가·…당 값처럼 ×100 하지 않는 나눗셈은 calculate_ratio(kind=column_ratio, percent=false, value_column=분자, "
+                     "denominator_column=분모) (예: 평균 판매단가 = 매출액 ÷ 판매수량). 백분율(…률·비율·%)이면 percent를 쓰지 않는다.")
     if "compare_column" in Filter.model_fields:
         lines.append("- 같은 행의 두 컬럼을 비교(예: 안전재고보다 현재수량이 적은)하면 filters=[{column: 현재수량, op: '<', compare_column: 안전재고}].")
     return ("\n추가 도구\n" + "\n".join(lines) + "\n") if lines else ""

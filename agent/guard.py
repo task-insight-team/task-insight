@@ -29,7 +29,7 @@ MIN_TOP_N = 5
 AS_OF_TOOLS = ("count_overdue_tasks", "summarize_by_category")  # as_of를 받는 도구 (항상 외부 기준일로 채움)
 # 도구별 컬럼 이름을 받는 필드 (aggregate.group_by는 목록)
 COLUMN_FIELDS: dict[str, list[str]] = {
-    "aggregate": ["value_column", "group_by"],
+    "aggregate": ["value_column", "multiply_by", "group_by"],
     "calculate_ratio": ["value_column", "denominator_column", "group_by"],
     "count_overdue_tasks": ["group_by"],
     "summarize_by_category": ["group_by"],
@@ -400,6 +400,10 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
             found = _matching_cols(vocab, aliases)
             if found:
                 qc.mention_cols |= set(found)
+            elif label == "금액" and engine_has("multiply") and product_needed(question, vocab):
+                continue  # 두 숫자 컬럼의 곱(예: 현재수량 × 단가)으로 계산 가능 → 계획 단계에서 곱셈을 검사
+            elif label == "가격" and engine_has("percent") and unit_price_needed(question, vocab):
+                continue  # 합계 ÷ 합계(예: 매출액 ÷ 판매수량)로 계산 가능 → 계획 단계에서 나눗셈을 검사
             elif not _inside_value(m.group(0), question, vocab):  # '제품불량'처럼 데이터 값의 일부면 컬럼 요청이 아님
                 qc.missing_terms.append(label)
     for c in cols:  # 컬럼 이름 자체가 질문에 나온 경우 (sales, 건수 등)
@@ -455,6 +459,11 @@ def engine_has(feature: str) -> bool:
         return "calculate_ratio" in TOOLS
     if feature == "compare":
         return "compare_column" in Filter.model_fields
+    if feature == "multiply":  # 엔진 PR #40
+        return "multiply_by" in AggregateParams.model_fields
+    if feature == "percent":  # 엔진 PR #40
+        from contracts import RatioParams
+        return "percent" in RatioParams.model_fields
     return False
 
 
@@ -494,6 +503,11 @@ def generic_mismatch(tool: str, params: dict, qc: QuestionCols, vocab: Vocabular
         if col and col not in qc.mention_cols:
             want = ", ".join(show(c) for c in sorted(qc.group_cols)) or "(질문에 집계 기준 없음)"
             problems.append(f"집계 기준 '{show(col)}'은(는) 질문에서 요구하지 않았습니다 (요청 기준: {want})")
+    if tool in ("aggregate", "calculate_ratio") and qc.group_cols:  # 질문의 'X별'이 계획에서 빠지면 전체 값만 나옴
+        resolved = {vocab.resolve(table, g) for g in groups}
+        if not resolved & qc.group_cols:
+            want = ", ".join(show(c) for c in sorted(qc.group_cols))
+            problems.append(f"질문의 묶음 기준({want}별)이 계획에 없습니다 (group_by 필요)")
     value = params.get("value_column")
     if value and qc.metric_cols:
         col = vocab.resolve(table, value)
@@ -552,6 +566,169 @@ def fill_ratio_denominator(params: dict, vocab: Vocabulary) -> dict:
     return dict(params, denominator_column=others[0]) if len(others) == 1 else params
 
 
+# ---------------------------------------------------------------------------
+# 곱셈(금액 = 수량 × 단가)과 ×100 하지 않는 나눗셈(단가 = 매출액 ÷ 판매수량): 엔진 PR #40
+# 질문이 그 계산을 요구하고, 그 값을 담은 컬럼이 데이터에 없을 때만 허용한다.
+# ---------------------------------------------------------------------------
+_PRODUCT_RE = re.compile(r"금액|총액|가치|곱(?:한|해|하기|셈)|×")
+_PER_UNIT_RE = re.compile(r"단가|평균\s*(?:판매\s*)?가격|개당|건당|당\s*(?:매출|금액|가격)|÷|나눈|나눠|나누")
+_OTHER_CALC_RE = re.compile(r"합계|총|평균|차이|초과|증감|변화|추이|건수|개수")
+_DIVIDE_RE = re.compile(r"÷|나눈|나눠|나누")
+PRICE_ALIASES = ("단가", "가격", "price")
+QTY_ALIASES = ("수량", "판매량", "qty", "quantity", "units", "volume")
+AMOUNT_ALIASES = ("금액", "총액", "매출", "액", "amount", "sales", "revenue")
+AGG_FN = {"sum": "SUM", "mean": "AVG", "max": "MAX", "min": "MIN"}
+
+
+def _numeric_cols(vocab: Vocabulary, table: str = "main") -> list[str]:
+    return [c for c, t in vocab.table_of(table).items() if t == "숫자"]
+
+
+def _like(cols, aliases) -> list[str]:
+    return [c for c in cols if any(a.lower() in str(c).lower() or a.lower() in show(c).lower() for a in aliases)]
+
+
+def _named_numeric(question: str, vocab: Vocabulary, table: str = "main") -> list[str]:
+    """이름이 질문에 그대로 나온 숫자 컬럼 (질문에 나온 순서)."""
+    q = question.lower()
+    found = [(q.find(str(c).lower()), c) for c in _numeric_cols(vocab, table) if len(str(c)) >= 2 and str(c).lower() in q]
+    return [c for _, c in sorted(found)]
+
+
+def product_needed(question: str, vocab: Vocabulary, table: str = "main") -> bool:
+    """질문이 금액(두 컬럼의 곱)을 묻고, 금액을 담은 컬럼은 없고, 곱할 숫자 컬럼이 둘 이상 있다."""
+    if not _PRODUCT_RE.search(question):
+        return False
+    nums = _numeric_cols(vocab, table)
+    amount = [c for c in _like(nums, AMOUNT_ALIASES) if c not in _like(nums, PRICE_ALIASES)]
+    return not amount and len(nums) >= 2
+
+
+def unit_price_needed(question: str, vocab: Vocabulary, table: str = "main") -> bool:
+    """질문이 단가처럼 ×100 하지 않는 나눗셈을 묻고, 단가를 담은 컬럼은 없다 (있으면 그 컬럼을 그대로 집계)."""
+    if ratio_intent(question):
+        return False
+    # 'A 대비 B'는 두 컬럼 이름이 모두 나오고 다른 계산(합계·차이·초과 등)이 없을 때만 나눗셈으로 본다 (예: 계획 대비 실적 초과 ≠ 나눗셈)
+    by_ratio = "대비" in question and len(_named_numeric(question, vocab, table)) >= 2 and not _OTHER_CALC_RE.search(question)
+    if not (_PER_UNIT_RE.search(question) or by_ratio):
+        return False
+    nums = _numeric_cols(vocab, table)
+    return not _like(nums, PRICE_ALIASES) and len(nums) >= 2
+
+
+def expected_product(question: str, vocab: Vocabulary, table: str = "main") -> tuple[Optional[set], bool, str]:
+    """(곱할 두 컬럼, 질문에 둘 다 나왔는지, 정할 수 없을 때 사유)."""
+    nums = _numeric_cols(vocab, table)
+    named = _named_numeric(question, vocab, table)
+    price = _like(nums, PRICE_ALIASES)
+    qty = [c for c in _like(nums, QTY_ALIASES) if c not in price]
+    if len(named) == 2:
+        return set(named), True, ""
+    if len(named) == 1:
+        other = [c for c in (price if named[0] not in price else qty) if c != named[0]]
+        if len(other) == 1:
+            return {named[0], other[0]}, False, ""
+    elif not named and len(price) == 1 and len(qty) == 1:
+        return {qty[0], price[0]}, False, ""
+    cands = ", ".join(show(c) for c in nums)
+    return None, False, (f"곱할 두 컬럼을 질문에서 정할 수 없습니다 (숫자 컬럼: {cands}). "
+                         f"'현재수량과 단가를 곱한 금액'처럼 두 컬럼을 알려 주세요")
+
+
+def expected_division(question: str, vocab: Vocabulary, table: str = "main") -> tuple[Optional[tuple], bool, str]:
+    """((분자, 분모), 질문에 둘 다 나왔는지, 정할 수 없을 때 사유)."""
+    nums = _numeric_cols(vocab, table)
+    named = _named_numeric(question, vocab, table)
+    price = _like(nums, PRICE_ALIASES)
+    amount = [c for c in _like(nums, AMOUNT_ALIASES) if c not in price]
+    qty = [c for c in _like(nums, QTY_ALIASES) if c not in price and c not in amount]
+    ask = (f"나눌 분자·분모를 질문에서 정할 수 없습니다 (숫자 컬럼: {', '.join(show(c) for c in nums)}). "
+           f"'매출액 ÷ 판매수량'처럼 분자와 분모를 알려 주세요")
+    if len(named) == 2:
+        a, b = named
+        if re.search(re.escape(str(a)) + r"\S*\s*대비", question):  # 'A 대비 B' → B ÷ A
+            return (b, a), True, ""
+        if _DIVIDE_RE.search(question):  # 'A ÷ B', 'A를 B로 나눈' → 앞이 분자
+            return (a, b), True, ""
+        if a in amount and b in qty:
+            return (a, b), True, ""
+        if b in amount and a in qty:
+            return (b, a), True, ""
+        return None, False, ask
+    if len(named) == 1:
+        if named[0] in amount and len(qty) == 1:
+            return (named[0], qty[0]), False, ""
+        if named[0] in qty and len(amount) == 1:
+            return (amount[0], named[0]), False, ""
+    elif not named and len(amount) == 1 and len(qty) == 1:
+        return (amount[0], qty[0]), False, ""
+    return None, False, ask
+
+
+def _arith_check(tool: str, params: dict, question: str, vocab: Vocabulary, table: str, cols: dict) -> tuple[list[str], list[str]]:
+    """곱셈(multiply_by)·×100 없는 나눗셈(percent=false) ↔ 질문의 계산 의도."""
+    problems: list[str] = []
+    notices: list[str] = []
+    generic = vocab.kind != "standard"
+    mult = params.get("multiply_by")
+    need_prod = product_needed(question, vocab, table)
+    if tool == "aggregate" and mult:
+        a, b = vocab.resolve(table, params.get("value_column")), vocab.resolve(table, mult)
+        shown = f"{show(a or params.get('value_column'))} × {show(b or mult)}"
+        if params.get("op") == "count" or not params.get("value_column"):
+            problems.append("개수(count)에는 곱셈(multiply_by)을 쓸 수 없습니다")
+        elif not need_prod:
+            problems.append(f"질문은 금액·곱셈을 요구하지 않았는데 '{shown}' 곱셈을 계획했습니다. 질문에 나온 값만 그대로 계산합니다")
+        else:
+            for c in (a, b):
+                if c and cols.get(c) != "숫자":
+                    problems.append(f"'{show(c)}'은(는) 숫자 컬럼이 아니라 곱할 수 없습니다")
+            if a and a == b:
+                problems.append("같은 컬럼끼리 곱했습니다")
+            want, named, why = expected_product(question, vocab, table)
+            if want is None:
+                problems.append(why)
+            elif {a, b} != want:
+                order = sorted(want, key=lambda c: (c in _like(want, PRICE_ALIASES), str(c)))  # 수량 × 단가 순서로 표시
+                problems.append(f"곱셈 '{shown}'은(는) 질문에 맞는 '{' × '.join(show(c) for c in order)}'와 다릅니다")
+            elif not named:
+                fn = AGG_FN.get(params.get("op"), "SUM")
+                notices.append(f"질문에 곱할 컬럼이 없어 {fn}({shown})로 계산합니다. 다른 컬럼이 맞다면 질문에 두 컬럼을 적어 다시 물어 주세요.")
+    elif need_prod and engine_has("multiply") and tool in ("aggregate", "calculate_ratio"):
+        problems.append("질문은 금액(두 컬럼의 곱)을 물었는데 곱셈 없이 계산합니다. aggregate의 multiply_by로 곱해야 합니다")
+
+    per_unit = unit_price_needed(question, vocab, table)
+    if tool == "calculate_ratio" and params.get("percent") is False:
+        num = vocab.resolve(table, params.get("value_column"))
+        den = vocab.resolve(table, params.get("denominator_column"))
+        if params.get("kind") != "column_ratio":
+            problems.append("×100 하지 않는 나눗셈(percent=false)은 column_ratio에서만 씁니다")
+        elif not (num and den):
+            problems.append("나눗셈에는 분자(value_column)와 분모(denominator_column)가 모두 필요합니다")
+        elif ratio_intent(question):
+            problems.append("질문은 백분율(…률·비율·%)을 물었는데 ×100 하지 않는 나눗셈입니다")
+        elif not per_unit:
+            problems.append(f"질문은 나눗셈(단가·…당)을 요구하지 않았는데 '{show(num)} ÷ {show(den)}' 나눗셈을 계획했습니다")
+        else:
+            if num == den:
+                problems.append("나눗셈의 분자와 분모가 같은 컬럼입니다")
+            want, named, why = expected_division(question, vocab, table)
+            if want is None:
+                problems.append(why)
+            elif (num, den) != want:
+                problems.append(f"나눗셈 'SUM({show(num)}) ÷ SUM({show(den)})'은(는) 질문에 맞는 "
+                                f"'SUM({show(want[0])}) ÷ SUM({show(want[1])})'와 다릅니다")
+            elif not named:
+                notices.append(f"질문에 분자·분모가 없어 SUM({show(num)}) ÷ SUM({show(den)})로 계산합니다 (×100 하지 않음, 행별 값의 평균 아님). "
+                               f"다른 컬럼이 맞다면 질문에 분자와 분모를 적어 다시 물어 주세요.")
+    elif per_unit and engine_has("percent"):
+        if tool == "calculate_ratio":
+            problems.append("질문은 단가처럼 ×100 하지 않는 나눗셈인데 백분율(×100)로 계산합니다 (percent=false 필요)")
+        elif tool == "aggregate" and generic:
+            problems.append("질문은 나눗셈(합계 ÷ 합계)을 물었는데 합계·평균 계산입니다. calculate_ratio(column_ratio, percent=false)여야 합니다")
+    return problems, notices
+
+
 def intent_check(tool: str, params: dict, question: str, qc: "QuestionCols", vocab: Vocabulary) -> tuple[list[str], list[str]]:
     """(실행하면 안 되는 사유, 승인 전에 보여 줄 안내). 질문의 계산 의도와 계획 인자가 다르면 사유를 돌려준다."""
     problems: list[str] = []
@@ -561,8 +738,8 @@ def intent_check(tool: str, params: dict, question: str, qc: "QuestionCols", voc
     cols = vocab.table_of(table)
     intent = ratio_intent(question)
 
-    # 1) 비율 도구 ↔ 비율 요청
-    if tool == "calculate_ratio":
+    # 1) 비율 도구 ↔ 비율 요청 (×100 하지 않는 나눗셈은 아래 _arith_check에서 따로 검사)
+    if tool == "calculate_ratio" and params.get("percent") is not False:
         kind = params.get("kind")
         if not intent:
             problems.append("질문은 비율·비중을 묻지 않았는데 비율 계산(calculate_ratio)을 계획했습니다. 합계·개수 등 질문의 계산만 허용합니다")
@@ -598,7 +775,7 @@ def intent_check(tool: str, params: dict, question: str, qc: "QuestionCols", voc
                 missing = [v for v in _fvals(f) if v and v not in question]
                 if missing:
                     problems.append(f"조건 값 '{', '.join(missing)}'은(는) 질문에 없는 조건입니다")
-    elif generic and intent and tool == "aggregate" and engine_has("ratio"):
+    elif generic and intent and tool == "aggregate" and engine_has("ratio") and not params.get("multiply_by"):
         problems.append("질문은 비율·비중을 물었는데 합계·개수·평균 계산입니다. 비율 계산(calculate_ratio)이어야 합니다")
 
     # 2) 컬럼끼리 비교 ↔ 질문의 비교 대상
@@ -623,7 +800,10 @@ def intent_check(tool: str, params: dict, question: str, qc: "QuestionCols", voc
     elif generic and qc.month_from_daily and engine_has("period") and tool in ("aggregate", "calculate_ratio") \
             and any(vocab.roles.get(c) == "date_day" for c in resolved if c):
         problems.append("질문은 월별을 물었는데 일 단위 날짜로 묶었습니다 (period=month 필요)")
-    return problems, notices
+
+    # 4)·5) 곱셈·×100 없는 나눗셈 (엔진 PR #40)
+    p2, n2 = _arith_check(tool, params, question, vocab, table, cols)
+    return problems + p2, notices + n2
 
 
 def visible_columns(vocab: Vocabulary) -> list[str]:

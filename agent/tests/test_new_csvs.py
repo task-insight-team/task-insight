@@ -173,7 +173,8 @@ def test_qual_month_over_month(qual):
 # 현재 엔진에 없는 연산 → LLM 호출 없이 unsupported (다른 계산으로 대신하지 않음)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("name,question,keyword,feature", [
-    ("inventory", "창고별 재고 금액은?", "금액", None),            # 곱셈(계산 컬럼): 엔진에 없음 → 항상 차단
+    ("inventory", "창고별 재고 금액은?", "금액", "multiply"),      # 곱셈(계산 컬럼): 엔진 PR #40
+    ("sales", "지역별 판매 단가는?", "가격", "percent"),          # ×100 없는 나눗셈: 엔진 PR #40
     ("sales", "고객별 매출액 합계는?", "고객", None),               # 컬럼 없음 → 항상 차단
     ("inventory", "안전재고보다 현재수량이 적은 품목은?", "컬럼 간 비교", "compare"),
     ("sales", "월별 매출액 추이는?", "월 묶음", "period"),
@@ -271,3 +272,10 @@ def test_term_inside_data_value_is_not_a_missing_column():
     assert resp.status == "plan" and llm.prompts, resp.message
     out = execute_plan(ds, resp.plan, approve_plan(resp.plan))
     assert out.steps[0].result.value == 5.0
+
+
+def test_requested_group_missing_from_plan_is_rejected():
+    """질문의 'X별'이 계획에서 빠지면 전체 값만 나오므로 승인 대상이 되지 않는다 (엔진 버전 무관)."""
+    call = ("aggregate", {"op": "sum", "value_column": "불량수량"})
+    resp = create_plan("공정별 불량수량 합계는?", ds_of("quality"), AS_OF, FakeLLM(FakeLLM.calls(call), FakeLLM.calls(call)))
+    assert resp.status != "plan" and "공정" in resp.message
