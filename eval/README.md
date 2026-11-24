@@ -20,7 +20,7 @@ python -m eval.run_eval --out eval_result.json # 질문별 도구·인자·판�
 - 연속 3개 질문이 측정 못 함이면 일일 한도로 보고 남은 질문은 실행하지 않는다 (모두 측정 못 함).
 - 키 없음·서버 오류 같은 다른 오류는 다시 돌리지 않고 지금처럼 `오류`(오답)로 센다.
 - 재시도한 질문의 시간·LLM 호출 수는 마지막 실행 기준이고, 재시도 횟수는 `--out` JSON의 `retries`에 남는다.
-- LLM 호출 전에 사전 차단되는 질문(예: G15)은 한도와 무관하게 원래대로 채점한다.
+- LLM 호출 전에 사전 차단되는 질문(데이터에 없는 정보를 묻는 질문 등)은 한도와 무관하게 원래대로 채점한다.
 ```powershell
 python -m eval.run_eval --set general --quota-wait 60 --quota-retries 3   # 무료 키로 반복 측정할 때
 ```

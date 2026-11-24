@@ -38,9 +38,9 @@ class ToolSpec:
 
 TOOLS: dict[str, ToolSpec] = {
     "aggregate": ToolSpec(tools.aggregate, AggregateParams,
-        "합계(sum)·평균(mean)·개수(count)·최댓값(max)·최솟값(min). table(main/employees/projects), group_by, filters, sort, top_n. period=month면 group_by의 날짜 컬럼을 월별로 묶는다(월별 추이). 일반 CSV에도 쓸 수 있다."),
+        "합계(sum)·평균(mean)·개수(count)·최댓값(max)·최솟값(min). table(main/employees/projects), group_by, filters, sort, top_n. period=month면 group_by의 날짜 컬럼을 월별로 묶는다(월별 추이). multiply_by: 행마다 value_column×multiply_by를 계산한 뒤 op 적용(예: 재고금액=수량×단가의 합계, count에는 못 씀). 일반 CSV에도 쓸 수 있다."),
     "calculate_ratio": ToolSpec(tools.calculate_ratio, RatioParams,
-        "비율(%). kind=share: 그룹별 비중(value_column 합계 또는 건수, group_by 필수) / column_ratio: 합계(value_column)÷합계(denominator_column) (예: 불량률) / condition_rate: condition에 맞는 행 수÷전체 행 수 (예: 완료 비율). group_by·filters·period=month. 일반 CSV에도 쓸 수 있다."),
+        "비율(%). kind=share: 그룹별 비중(value_column 합계 또는 건수, group_by 필수) / column_ratio: 합계(value_column)÷합계(denominator_column) (예: 불량률) / condition_rate: condition에 맞는 행 수÷전체 행 수 (예: 완료 비율). group_by·filters·period=month. percent=false: column_ratio에서 ×100 없이 나눈 값(예: 판매 단가=합계(매출)÷합계(판매량), 단위 없음). 일반 CSV에도 쓸 수 있다."),
     "compare_periods": ToolSpec(tools.compare_periods, ComparePeriodsParams,
         "두 달(YYYY-MM)의 건수·합계·평균 비교, 증감과 증감률. previous 생략 시 전월. 일반 CSV에도 쓸 수 있다."),
     "count_overdue_tasks": ToolSpec(tools.count_overdue_tasks, CountOverdueParams,

@@ -258,19 +258,28 @@ def _periods(res: ToolResult) -> str:
 
 
 def _ratio(res: ToolResult) -> str:
+    """비율(%)·비중(%)·×100 하지 않는 나눗셈 값(값(분자÷분모)). ToolResult의 숫자만 쓴다."""
     kind = res.params.get("kind")
     if not res.rows:
         return "결과가 없습니다."
     keys = list(res.rows[0])
-    key = "비중(%)" if "비중(%)" in keys else "비율(%)"
+    key = next((k for k in ("비중(%)", "비율(%)") if k in keys), None) or next((k for k in keys if str(k).startswith("값(")), None)
+    if key is None:  # 알 수 없는 결과 형식: 숫자를 추측하지 않는다
+        return "결과 형식을 알 수 없어 설명을 만들지 않았습니다. 표를 확인해 주세요."
+    percent = key.endswith("(%)")
+    fmt = pct if percent else num
+    word = "비중" if kind == "share" else ("비율" if percent else key)
     if not res.params.get("group_by"):
         r = res.rows[0]
         parts = [f"{k} {num(v)}" for k, v in r.items() if k not in ("구분", key)]
-        return f"전체 {('비중' if kind == 'share' else '비율')}은 {pct(res.value if res.value is not None else r.get(key))}입니다 ({', '.join(parts)})."
+        v = res.value if res.value is not None else r.get(key)
+        if v is None:
+            return "분모 합계가 0이라 계산할 수 없습니다."
+        return f"전체 {word}은(는) {fmt(v)}입니다 ({', '.join(parts)})."
     cat = keys[0]
     valid = [r for r in res.rows if r.get(key) is not None]
     if not valid:
-        return "모든 그룹의 분모가 0이라 비율을 계산할 수 없습니다."
+        return f"모든 그룹의 분모 합계가 0이라 {'비율' if percent else '값'}을 계산할 수 없습니다."
     if kind == "share":
         top = max(valid, key=lambda r: r[key])
         tied = [r for r in valid if r[key] == top[key]]
@@ -284,10 +293,12 @@ def _ratio(res: ToolResult) -> str:
     def detail(r):
         return ", ".join(f"{k} {num(r.get(k))}" for k in nums)
 
-    out = (f"{cat}별 비율은 {hi[cat]}이(가) {pct(hi[key])}로 가장 높고 ({detail(hi)}), "
-           f"{lo[cat]}이(가) {pct(lo[key])}로 가장 낮습니다 ({detail(lo)}).")
+    out = (f"{cat}별 {word}은(는) {hi[cat]}이(가) {fmt(hi[key])}로 가장 높고 ({detail(hi)}), "
+           f"{lo[cat]}이(가) {fmt(lo[key])}로 가장 낮습니다 ({detail(lo)}).")
     if res.value is not None:
-        out += f" 전체 비율은 {pct(res.value)}입니다."
+        out += f" 전체 {'비율은' if percent else '값은'} {fmt(res.value)}입니다."
+    if not percent:
+        out += " (합계 ÷ 합계, ×100 하지 않음)"
     if len(valid) < len(res.rows):
         out += f" 분모가 0인 {len(res.rows) - len(valid)}개 그룹은 계산하지 않았습니다."
     return out

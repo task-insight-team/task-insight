@@ -200,7 +200,10 @@ def test_month_grouping_keeps_years_apart():
 # ---------------------------------------------------------------------------
 # 회귀: 곱셈은 계속 차단, 합계 질문은 그대로, 승인 지문 유지
 # ---------------------------------------------------------------------------
-def test_multiplication_still_unsupported():
+def test_multiplication_unsupported_without_engine_support():
+    from agent.guard import engine_has
+    if engine_has("multiply"):
+        pytest.skip("엔진에 곱셈(multiply_by) 있음 (PR #40) → test_arith_pr40.py에서 검증")
     llm = FakeLLM()
     resp = create_plan("창고별 재고 금액은?", ds_of("inventory"), AS_OF, llm)
     assert resp.status == "unsupported" and not llm.prompts

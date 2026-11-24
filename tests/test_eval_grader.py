@@ -504,6 +504,22 @@ def test_general_g14_answerable_with_compare_column(datasets):
 
 
 # ---------------------------------------------------------------------------
+# 계산 컬럼(aggregate multiply_by, calculate_ratio percent=False)으로 답할 수 있게 된 한계 질문
+# ---------------------------------------------------------------------------
+def test_general_g15_answerable_with_multiply_by(datasets):
+    calls = [("aggregate", {"op": "sum", "value_column": "수량", "multiply_by": "단가", "group_by": ["창고"]})]
+    r = engine_runs(datasets, {"G15": calls})["G15"]
+    assert r["pass"] and r["outcome"] == "정답", r["reason"]
+
+
+def test_holdout_h05_answerable_with_ratio_without_percent(datasets):
+    calls = [("calculate_ratio", {"kind": "column_ratio", "value_column": "revenue", "denominator_column": "units",
+                                  "percent": False, "group_by": ["region"]})]
+    r = holdout_engine_runs(datasets, {"H05": calls})["H05"]
+    assert r["pass"] and r["outcome"] == "정답", r["reason"]
+
+
+# ---------------------------------------------------------------------------
 # Gemini 한도 초과(429): 오답이 아니라 다시 시도 → 그래도 안 되면 '측정 못 함' (정답률 분모에서 제외)
 # ---------------------------------------------------------------------------
 QUOTA_ERR = LLMError("quota", "429 RESOURCE_EXHAUSTED")
@@ -572,7 +588,7 @@ def test_other_llm_errors_are_not_retried(datasets):
 
 def test_limit_question_quota_is_not_honest_refusal(datasets):
     """한계 질문은 숫자 없이 끝나면 '정직한 거절'로 통과하지만, 한도 초과로 끝난 건 측정 못 함이다.
-    (G15처럼 LLM 호출 전에 사전 차단되는 질문은 한도와 무관하게 정직한 거절 그대로)"""
+    (LLM 호출 전에 사전 차단되는 질문은 한도와 무관하게 원래대로 채점)"""
     q = [x for x in ev.load_questions(("general",)) if x.id == "G16"]
     runs = ev.run_questions(q, datasets, lambda _: FakeLLM(QUOTA_ERR), sleep=lambda s: None)
     r = ev.grade(runs)[0]

@@ -14,7 +14,7 @@ from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
 from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, fill_ratio_denominator,
-                         generic_mismatch, intent_check,
+                         AGG_FN, generic_mismatch, intent_check,
                          generic_unsupported,
                          missing_concepts, plan_missing, question_columns,
                          visible_columns,
@@ -48,12 +48,20 @@ def _purpose(tool: str, p: dict) -> str:
     if tool == "aggregate":
         what = f"{show(p['value_column'])} " if p.get("value_column") else ""
         text = f"{what}{AGG_OP.get(p.get('op'), '')} 집계".strip()
+        if p.get("multiply_by") and p.get("value_column"):  # 곱셈: 계산식과 사용 컬럼을 그대로 보여 준다
+            fn = AGG_FN.get(p.get("op"), str(p.get("op")).upper())
+            expr = f"{show(p['value_column'])} × {show(p['multiply_by'])}"
+            text = (f"{show(p['value_column'])}×{show(p['multiply_by'])} {AGG_OP.get(p.get('op'), '')} 집계 "
+                    f"[계산식: {fn}({expr}), 행마다 {expr}를 계산한 뒤 {AGG_OP.get(p.get('op'), '')}, ×100 없음]")
     if tool == "calculate_ratio":  # 승인 전에 비율 종류·분자·분모가 보이게
         kind, num, den = p.get("kind"), p.get("value_column"), p.get("denominator_column")
         if kind == "share":
             text = f"{show(num) if num else '건수'} 비중 계산 [그룹 합계 ÷ 전체 합계]"
+        elif kind == "column_ratio" and p.get("percent") is False:  # ×100 하지 않는 나눗셈 (단가 등)
+            text = (f"나눗셈 계산 [계산식: SUM({show(num)}) ÷ SUM({show(den)}), ×100 하지 않음, "
+                    f"행별 값의 평균 아님]")
         elif kind == "column_ratio":
-            text = f"비율 계산 [비율 = {show(num)} 합계 ÷ {show(den)} 합계]"
+            text = f"비율 계산 [비율 = {show(num)} 합계 ÷ {show(den)} 합계 × 100]"
         else:
             cond = " / ".join(f"{show(f['column'])} {f['op']} {f.get('value')}" for f in p.get("condition") or [])
             text = f"조건 비율 계산 [조건({cond})에 맞는 건수 ÷ 전체 건수]"
@@ -234,6 +242,7 @@ def _build(reply, vocab, conditions, qc=None, question: str = "") -> dict:
         if c["name"] == "calculate_ratio":  # 분모가 빠졌고 후보가 하나뿐이면 채워서 승인 화면에 분모를 명시 (여럿이면 되묻기)
             params = fill_ratio_denominator(params, vocab)
         mismatch = generic_mismatch(c["name"], params, qc, vocab) if qc is not None else []
+        hints += [m for m in mismatch if m.startswith("질문의 묶음 기준") and m not in hints]  # 빠진 'X별'은 재계획으로 고칠 수 있음
         if qc is not None:  # 계산 의도(합계↔비율, 비교 대상, 월별)가 질문과 같은지
             wrong, intent_notes = intent_check(c["name"], params, question, qc, vocab)
             mismatch += wrong
