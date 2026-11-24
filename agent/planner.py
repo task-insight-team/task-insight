@@ -37,7 +37,7 @@ PURPOSE = {
     "cost_vs_budget": "예산 대비 실적 비용 확인",
     "check_missing_data": "확인이 필요한 누락 데이터 확인",
 }
-AGG_OP = {"sum": "합계", "mean": "평균", "count": "개수"}
+AGG_OP = {"sum": "합계", "mean": "평균", "count": "개수", "max": "최댓값", "min": "최솟값"}  # max·min: 엔진 PR #32
 
 
 def _purpose(tool: str, p: dict) -> str:
