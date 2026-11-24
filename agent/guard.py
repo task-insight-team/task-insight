@@ -30,6 +30,7 @@ AS_OF_TOOLS = ("count_overdue_tasks", "summarize_by_category")  # as_of를 받�
 # 도구별 컬럼 이름을 받는 필드 (aggregate.group_by는 목록)
 COLUMN_FIELDS: dict[str, list[str]] = {
     "aggregate": ["value_column", "group_by"],
+    "calculate_ratio": ["value_column", "denominator_column", "group_by"],
     "count_overdue_tasks": ["group_by"],
     "summarize_by_category": ["group_by"],
     "calculate_completion_rate": ["group_by"],
@@ -131,9 +132,12 @@ def validate_call(name: str, args: Any, vocab: Vocabulary) -> tuple[dict, list[s
         for item in (val if isinstance(val, list) else [val]):
             if item:
                 _check_column(vocab, table, item)
-    for flt in params.get("filters") or []:
+    for flt in (params.get("filters") or []) + (params.get("condition") or []):
         col = _check_column(vocab, table, flt["column"])
-        _check_values(vocab, col, flt["op"], flt.get("value"))
+        if flt.get("compare_column"):  # 컬럼끼리 비교: 비교 대상 컬럼도 데이터에 있어야 한다 (값 확인은 하지 않음)
+            _check_column(vocab, table, flt["compare_column"])
+        else:
+            _check_values(vocab, col, flt["op"], flt.get("value"))
     for field, col in DIRECT_SCOPE.items():  # department·project_id 직접 인자 (지원하는 도구만 model_dump에 남는다)
         if supports(name, field) and params.get(field) not in (None, ""):
             canon = _canonical(vocab, col, params[field])
@@ -404,10 +408,14 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
     if vocab.kind != "standard":  # 표준 데이터는 기존 조건 대조(부서·프로젝트·지표)로 확인
         for m in GROUP_RE.finditer(question):
             word = (m.group(1) or m.group(2) or "").strip()
-            if not word or word in ("부서", "팀"):  # 부서는 REQUIRED_CONCEPTS에서 확인
+            if not word:
                 continue
             target = set()
-            if word in MONTH_WORDS or word.endswith("월"):
+            if word in ("부서", "팀"):  # 부서 정보가 있는지는 REQUIRED_CONCEPTS가 확인, 여기서는 해당 컬럼에 대응
+                target = set(_matching_cols(vocab, ("부서", "dept", "department", "team", "팀")))
+                if not target:
+                    continue
+            elif word in MONTH_WORDS or word.endswith("월"):
                 target = set(_matching_cols(vocab, MONTH_HINTS)) | {c for c, t in cols.items() if t == "날짜"}
                 target |= {c for c, r in vocab.roles.items() if r in ("date_day", "date_month")}
                 if target and not any(vocab.roles.get(c) == "date_month" or "month" in c.lower() for c in target):
@@ -438,12 +446,24 @@ _RATIO_OK = ("증감률", "증감율", "변화율", "증가율", "감소율", "�
 _COMPARE_RE = re.compile(r"보다.{0,15}?(많|적|크|작|높|낮|부족|모자|초과|미만|넘)")  # "안전재고보다 현재수량이 적은"
 
 
+def engine_has(feature: str) -> bool:
+    """엔진이 실제로 지원하는 기능인지 (계약에서 확인 → 엔진 버전과 무관하게 정확, 머지 순서와 무관)."""
+    from contracts import AggregateParams, Filter
+    if feature == "period":
+        return "period" in AggregateParams.model_fields
+    if feature == "ratio":
+        return "calculate_ratio" in TOOLS
+    if feature == "compare":
+        return "compare_column" in Filter.model_fields
+    return False
+
+
 def generic_unsupported(question: str, vocab: Vocabulary, qc: QuestionCols) -> list[str]:
     if vocab.kind == "standard":
         return []
     cols = vocab.columns.get("main", {})
     reasons = []
-    for m in _RATIO_RE.finditer(question):
+    for m in (_RATIO_RE.finditer(question) if not engine_has("ratio") else []):
         word = m.group(1)
         if any(ok in question for ok in _RATIO_OK) and word in _RATIO_OK:
             continue
@@ -451,9 +471,9 @@ def generic_unsupported(question: str, vocab: Vocabulary, qc: QuestionCols) -> l
             continue  # 증감률 또는 그 이름의 컬럼이 이미 있음
         reasons.append(f"'{word}' 같은 비율·비중 계산 (두 값을 나누는 도구가 아직 없음)")
         break
-    if _COMPARE_RE.search(question) and len(qc.verbatim_numeric) >= 2:
+    if _COMPARE_RE.search(question) and len(qc.verbatim_numeric) >= 2 and not engine_has("compare"):
         reasons.append("두 컬럼 값을 서로 비교하는 조건 (컬럼 간 비교 필터가 아직 없음)")
-    if qc.month_from_daily:
+    if qc.month_from_daily and not engine_has("period"):
         reasons.append("일 단위 날짜를 월별로 묶어 여러 달을 나열하는 집계 (월 묶음 도구가 아직 없음, 두 달 비교는 가능)")
     return reasons
 
@@ -480,6 +500,130 @@ def generic_mismatch(tool: str, params: dict, qc: QuestionCols, vocab: Vocabular
         if col and col not in qc.metric_cols:
             problems.append(f"지표 '{show(col)}'은(는) 질문의 지표({', '.join(show(c) for c in sorted(qc.metric_cols))})와 다릅니다")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# 계산 의도 대조: 질문이 합계를 물었는지 비율·비중을 물었는지, 비교·월별을 물었는지와 실제 인자를 맞춰 본다.
+# (설명 문구가 아니라 실제 도구·인자를 검사한다)
+# ---------------------------------------------------------------------------
+_SHARE_RE = re.compile(r"비중|점유율|구성비|차지하는")
+_RATE_STEM_RE = re.compile(r"([가-힣A-Za-z0-9]{2,}?)(?:률|율)|([가-힣A-Za-z0-9]+)\s*(?:비율|비중|퍼센트)")  # 불량률은 → 불량
+_MONTH_INTENT_RE = re.compile(r"월별|월간|매월|달마다|월마다|달별|월 단위|월단위")
+RATIO_KIND_LABEL = {"share": "비중", "column_ratio": "컬럼 비율", "condition_rate": "조건 비율"}
+
+
+def ratio_intent(question: str) -> Optional[str]:
+    """'share'(비중) / 'rate'(…률·…율·비율) / None. 증감률·변화율은 compare_periods가 계산하므로 비율 요청으로 보지 않는다."""
+    if _SHARE_RE.search(question):
+        return "share"
+    for m in _RATIO_RE.finditer(question):
+        if m.group(1) not in _RATIO_OK:
+            return "rate"
+    return None
+
+
+def ratio_stems(question: str) -> list[str]:
+    """'불량률' → '불량', '처리완료 비율' → '처리완료' (분자 컬럼·조건 확인용)."""
+    out = []
+    for m in _RATE_STEM_RE.finditer(question):
+        stem = (m.group(1) or m.group(2) or "").strip()
+        if stem and stem + "률" not in _RATIO_OK and stem + "율" not in _RATIO_OK and len(stem) >= 1:
+            out.append(stem)
+    return out
+
+
+def _fvals(f: dict) -> list[str]:
+    v = f.get("value")
+    if isinstance(v, list):
+        return [str(x) for x in v]
+    if isinstance(v, str) and f.get("op") == "in":
+        return [x.strip() for x in v.split(",")]
+    return [] if v is None else [str(v)]
+
+
+def fill_ratio_denominator(params: dict, vocab: Vocabulary) -> dict:
+    """column_ratio에 분모가 빠졌을 때, 분자를 뺀 숫자 컬럼이 하나뿐이면 그것을 분모로 채운다 (승인 전 계획에 명시됨).
+    후보가 여럿이면 채우지 않는다 → intent_check가 되묻는다."""
+    if params.get("kind") != "column_ratio" or params.get("denominator_column") or not params.get("value_column"):
+        return params
+    table = params.get("table", "main")
+    num = vocab.resolve(table, params["value_column"])
+    others = [c for c, t in vocab.table_of(table).items() if t == "숫자" and c != num]
+    return dict(params, denominator_column=others[0]) if len(others) == 1 else params
+
+
+def intent_check(tool: str, params: dict, question: str, qc: "QuestionCols", vocab: Vocabulary) -> tuple[list[str], list[str]]:
+    """(실행하면 안 되는 사유, 승인 전에 보여 줄 안내). 질문의 계산 의도와 계획 인자가 다르면 사유를 돌려준다."""
+    problems: list[str] = []
+    notices: list[str] = []
+    generic = vocab.kind != "standard"
+    table = params.get("table", "main")
+    cols = vocab.table_of(table)
+    intent = ratio_intent(question)
+
+    # 1) 비율 도구 ↔ 비율 요청
+    if tool == "calculate_ratio":
+        kind = params.get("kind")
+        if not intent:
+            problems.append("질문은 비율·비중을 묻지 않았는데 비율 계산(calculate_ratio)을 계획했습니다. 합계·개수 등 질문의 계산만 허용합니다")
+        elif intent == "share" and kind != "share":
+            problems.append(f"질문은 전체 대비 비중을 물었는데 '{RATIO_KIND_LABEL.get(kind, kind)}' 계산입니다")
+        elif intent == "rate" and kind == "share":
+            problems.append("질문은 비율(…률)을 물었는데 전체 대비 비중 계산입니다 (분자·분모가 다름)")
+        num = vocab.resolve(table, params.get("value_column"))
+        den = vocab.resolve(table, params.get("denominator_column"))
+        if kind == "column_ratio" and not (params.get("value_column") and params.get("denominator_column")):
+            problems.append("column_ratio에는 분자(value_column)와 분모(denominator_column)가 모두 필요합니다")
+        if kind == "condition_rate" and not params.get("condition"):
+            problems.append("condition_rate에는 분자 조건(condition)이 필요합니다")
+        if intent and kind == "column_ratio" and num and den:
+            stems = ratio_stems(question)
+            if num == den:
+                problems.append("비율의 분자와 분모가 같은 컬럼입니다")
+            if not (num in qc.verbatim_numeric or any(s in num or s in show(num) for s in stems)):
+                problems.append(f"분자 '{show(num)}'은(는) 질문의 비율({', '.join(stems) or '-'})과 맞지 않습니다")
+            named_dens = qc.verbatim_numeric - {num}
+            if named_dens and den not in named_dens:
+                problems.append(f"분모 '{show(den)}'은(는) 질문에 나온 분모({', '.join(show(c) for c in sorted(named_dens))})와 다릅니다")
+            elif not named_dens:
+                others = [c for c, t in cols.items() if t == "숫자" and c != num]
+                if len(others) > 1:  # 분모 후보가 여럿이면 추측하지 않고 되묻는다
+                    problems.append(f"분모가 질문에 없고 후보가 여러 개({', '.join(show(c) for c in others)})라 정할 수 없습니다. "
+                                    f"'… 대비 {show(num)} 비율'처럼 분모를 알려 주세요")
+                else:
+                    notices.append(f"분모를 질문에서 정하지 않아 '{show(den)}'을(를) 분모로 씁니다 "
+                                   f"(비율 = {show(num)} 합계 ÷ {show(den)} 합계). 다른 분모가 맞다면 질문에 분모를 적어 다시 물어 주세요.")
+        if intent and kind == "condition_rate":
+            for f in params.get("condition") or []:
+                missing = [v for v in _fvals(f) if v and v not in question]
+                if missing:
+                    problems.append(f"조건 값 '{', '.join(missing)}'은(는) 질문에 없는 조건입니다")
+    elif generic and intent and tool == "aggregate" and engine_has("ratio"):
+        problems.append("질문은 비율·비중을 물었는데 합계·개수·평균 계산입니다. 비율 계산(calculate_ratio)이어야 합니다")
+
+    # 2) 컬럼끼리 비교 ↔ 질문의 비교 대상
+    cmp_filters = [f for f in params.get("filters") or [] if f.get("compare_column")]
+    for f in cmp_filters:
+        a, b = vocab.resolve(table, f.get("column")), vocab.resolve(table, f.get("compare_column"))
+        if not (a in qc.verbatim_numeric and b in qc.verbatim_numeric) and generic:
+            problems.append(f"비교 '{show(a or f.get('column'))} {f.get('op')} {show(b or f.get('compare_column'))}'은(는) 질문의 비교 대상과 다릅니다")
+    compare_intent = generic and _COMPARE_RE.search(question) and len(qc.verbatim_numeric) >= 2
+    if compare_intent and engine_has("compare") and tool in ("aggregate", "calculate_ratio") and not cmp_filters:
+        problems.append(f"질문의 컬럼 비교({', '.join(show(c) for c in sorted(qc.verbatim_numeric))})가 계획에 없습니다")
+
+    # 3) 월별 묶음 ↔ 질문의 월별 요청
+    groups = params.get("group_by") or []
+    groups = groups if isinstance(groups, list) else [groups]
+    resolved = [vocab.resolve(table, g) for g in groups]
+    if params.get("period") == "month":
+        if not (qc.month_from_daily or _MONTH_INTENT_RE.search(question)):
+            problems.append("질문은 월별 집계를 요청하지 않았는데 월별로 묶었습니다")
+        if generic and not any(vocab.roles.get(c) in ("date_day", "date_month") for c in resolved if c):
+            problems.append("월별로 묶을 날짜 컬럼이 묶음 기준에 없습니다")
+    elif generic and qc.month_from_daily and engine_has("period") and tool in ("aggregate", "calculate_ratio") \
+            and any(vocab.roles.get(c) == "date_day" for c in resolved if c):
+        problems.append("질문은 월별을 물었는데 일 단위 날짜로 묶었습니다 (period=month 필요)")
+    return problems, notices
 
 
 def visible_columns(vocab: Vocabulary) -> list[str]:

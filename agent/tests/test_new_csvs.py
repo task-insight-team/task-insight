@@ -172,20 +172,25 @@ def test_qual_month_over_month(qual):
 # ---------------------------------------------------------------------------
 # 현재 엔진에 없는 연산 → LLM 호출 없이 unsupported (다른 계산으로 대신하지 않음)
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("name,question,keyword", [
-    ("inventory", "창고별 재고 금액은?", "금액"),
-    ("inventory", "안전재고보다 현재수량이 적은 품목은?", "컬럼 간 비교"),
-    ("sales", "월별 매출액 추이는?", "월 묶음"),
-    ("sales", "상품별 매출 비중은?", "비율"),
-    ("sales", "고객별 매출액 합계는?", "고객"),
-    ("quality", "공정별 불량률은?", "비율"),
-    ("quality", "월별 불량수량 추이는?", "월 묶음"),
+@pytest.mark.parametrize("name,question,keyword,feature", [
+    ("inventory", "창고별 재고 금액은?", "금액", None),            # 곱셈(계산 컬럼): 엔진에 없음 → 항상 차단
+    ("sales", "고객별 매출액 합계는?", "고객", None),               # 컬럼 없음 → 항상 차단
+    ("inventory", "안전재고보다 현재수량이 적은 품목은?", "컬럼 간 비교", "compare"),
+    ("sales", "월별 매출액 추이는?", "월 묶음", "period"),
+    ("sales", "상품별 매출 비중은?", "비율", "ratio"),
+    ("quality", "공정별 불량률은?", "비율", "ratio"),
+    ("quality", "월별 불량수량 추이는?", "월 묶음", "period"),
 ])
-def test_unsupported_without_llm(name, question, keyword):
-    llm = FakeLLM()
+def test_unsupported_without_llm(name, question, keyword, feature):
+    """엔진에 없는 연산만 LLM 호출 전에 차단한다. 엔진이 지원하게 되면(PR #38) 차단을 풀고 LLM 계획 단계로 넘긴다."""
+    from agent.guard import engine_has
+    llm = FakeLLM(FakeLLM.calls(("aggregate", {"op": "count"})))
     resp = create_plan(question, ds_of(name), AS_OF, llm)
-    assert resp.status == "unsupported" and resp.plan is None and not llm.prompts, resp.message
-    assert keyword in resp.message and "대신하지 않습니다" in resp.message
+    if feature and engine_has(feature):
+        assert llm.prompts, f"엔진이 지원하는데 사전 차단됨: {resp.message}"
+    else:
+        assert resp.status == "unsupported" and resp.plan is None and not llm.prompts, resp.message
+        assert keyword in resp.message and "대신하지 않습니다" in resp.message
 
 
 def test_growth_rate_is_still_supported(sales):

@@ -257,7 +257,44 @@ def _periods(res: ToolResult) -> str:
     return out + "."
 
 
+def _ratio(res: ToolResult) -> str:
+    kind = res.params.get("kind")
+    if not res.rows:
+        return "결과가 없습니다."
+    keys = list(res.rows[0])
+    key = "비중(%)" if "비중(%)" in keys else "비율(%)"
+    if not res.params.get("group_by"):
+        r = res.rows[0]
+        parts = [f"{k} {num(v)}" for k, v in r.items() if k not in ("구분", key)]
+        return f"전체 {('비중' if kind == 'share' else '비율')}은 {pct(res.value if res.value is not None else r.get(key))}입니다 ({', '.join(parts)})."
+    cat = keys[0]
+    valid = [r for r in res.rows if r.get(key) is not None]
+    if not valid:
+        return "모든 그룹의 분모가 0이라 비율을 계산할 수 없습니다."
+    if kind == "share":
+        top = max(valid, key=lambda r: r[key])
+        tied = [r for r in valid if r[key] == top[key]]
+        names = ", ".join(str(r[cat]) for r in tied)
+        out = f"{cat}별 비중은 {names}이(가) {pct(top[key])}로 가장 큽니다{' (공동)' if len(tied) > 1 else ''}. ({_listing(res.rows, key, '%')})"
+        return out + " 비중은 반올림해 합이 100%와 조금 다를 수 있습니다."
+    hi = max(valid, key=lambda r: r[key])
+    lo = min(valid, key=lambda r: r[key])
+    nums = [k for k in keys if k not in (cat, key)]
+
+    def detail(r):
+        return ", ".join(f"{k} {num(r.get(k))}" for k in nums)
+
+    out = (f"{cat}별 비율은 {hi[cat]}이(가) {pct(hi[key])}로 가장 높고 ({detail(hi)}), "
+           f"{lo[cat]}이(가) {pct(lo[key])}로 가장 낮습니다 ({detail(lo)}).")
+    if res.value is not None:
+        out += f" 전체 비율은 {pct(res.value)}입니다."
+    if len(valid) < len(res.rows):
+        out += f" 분모가 0인 {len(res.rows) - len(valid)}개 그룹은 계산하지 않았습니다."
+    return out
+
+
 _BUILDERS = {
+    "calculate_ratio": _ratio,
     "count_overdue_tasks": _overdue,
     "summarize_by_category": _summary,
     "calculate_completion_rate": _completion,

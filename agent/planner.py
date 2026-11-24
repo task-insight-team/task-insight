@@ -13,7 +13,8 @@ from engine import gemini_tool_declarations
 from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
-from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, generic_mismatch,
+from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, fill_ratio_denominator,
+                         generic_mismatch, intent_check,
                          generic_unsupported,
                          missing_concepts, plan_missing, question_columns,
                          visible_columns,
@@ -37,6 +38,7 @@ PURPOSE = {
     "mh_overrun": "계획 대비 실적 MH 초과 확인",
     "cost_vs_budget": "예산 대비 실적 비용 확인",
     "check_missing_data": "확인이 필요한 누락 데이터 확인",
+    "calculate_ratio": "비율 계산",  # 엔진 PR #38
 }
 AGG_OP = {"sum": "합계", "mean": "평균", "count": "개수", "max": "최댓값", "min": "최솟값"}  # max·min: 엔진 PR #32
 
@@ -46,24 +48,42 @@ def _purpose(tool: str, p: dict) -> str:
     if tool == "aggregate":
         what = f"{show(p['value_column'])} " if p.get("value_column") else ""
         text = f"{what}{AGG_OP.get(p.get('op'), '')} 집계".strip()
+    if tool == "calculate_ratio":  # 승인 전에 비율 종류·분자·분모가 보이게
+        kind, num, den = p.get("kind"), p.get("value_column"), p.get("denominator_column")
+        if kind == "share":
+            text = f"{show(num) if num else '건수'} 비중 계산 [그룹 합계 ÷ 전체 합계]"
+        elif kind == "column_ratio":
+            text = f"비율 계산 [비율 = {show(num)} 합계 ÷ {show(den)} 합계]"
+        else:
+            cond = " / ".join(f"{show(f['column'])} {f['op']} {f.get('value')}" for f in p.get("condition") or [])
+            text = f"조건 비율 계산 [조건({cond})에 맞는 건수 ÷ 전체 건수]"
     groups = p.get("group_by")
     groups = groups if isinstance(groups, list) else ([groups] if groups else [])
     if groups:
-        text += f" ({'·'.join(show(g) for g in groups)}별)"
+        month = p.get("period") == "month"
+        text += f" ({'·'.join(show(g) + ('(월)' if month else '') for g in groups)}별)"
+        if month:
+            text += f" [월별 집계: 날짜 {'·'.join(show(g) for g in groups)}을(를) 연-월로 묶음]"
     if p.get("department"):  # 범위 인자를 승인 전 계획에서도 보이게 (결과 설명의 [부서 X]와 같은 정보)
         text += f" (부서 {p['department']})"
     if p.get("project_id"):
         text += f" (프로젝트 {p['project_id']})"
     for f in p.get("filters") or []:
-        text += f" [조건: {show(f['column'])} {f['op']} {f.get('value') if f.get('value') is not None else ''}]".replace(" ]", "]")
+        if f.get("compare_column"):  # 컬럼끼리 비교: 두 컬럼과 연산자를 그대로 보여 준다
+            text += f" [조건: {show(f['column'])} {f['op']} {show(f['compare_column'])} (같은 행의 두 컬럼 비교)]"
+        else:
+            text += f" [조건: {show(f['column'])} {f['op']} {f.get('value') if f.get('value') is not None else ''}]".replace(" ]", "]")
     return text
 
 
 def _chart(tool: str, p: dict, roles: dict | None = None) -> str:
     grouped = bool(p.get("group_by"))
     groups = p.get("group_by") if isinstance(p.get("group_by"), list) else [p.get("group_by")]
-    if tool == "aggregate" and roles and any(roles.get(g) in ("date_day", "date_month") for g in groups if g):
+    if tool in ("aggregate", "calculate_ratio") and (p.get("period") == "month" or (
+            roles and any(roles.get(g) in ("date_day", "date_month") for g in groups if g))):
         return "line"  # 날짜 순서 묶음 → 선그래프
+    if tool == "calculate_ratio":
+        return "bar" if grouped else "table"
     if tool in ("mh_overrun", "cost_vs_budget", "find_recurring_issues", "compare_periods"):
         return "bar"
     if tool in ("summarize_by_category", "calculate_completion_rate", "count_overdue_tasks", "aggregate"):
@@ -133,17 +153,22 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
         return _fail(question, as_of, LLMError.MESSAGES["unknown"], getattr(llm, "model", "") if llm else "")
     model = getattr(llm, "model", "")
 
-    built = _build(reply, vocab, conditions, qc)
-    if built["uncovered"]:
-        # 질문 조건이 빠진 단계가 있으면 이유를 알려 주고 1번만 다시 계획하게 한다
-        labels = ", ".join(c.label for c in built["uncovered"])
-        feedback = (f"{base_prompt}\n\n[이전 계획 검토 결과] 질문의 조건({labels})이 분석 인자에 반영되지 않았다. "
-                    "모든 조건을 aggregate의 filters(또는 cost_vs_budget의 project_id 등)로 반드시 반영하라. "
-                    f"aggregate를 쓴다면 filters 예: {json.dumps(suggest_filters(conditions, as_of), ensure_ascii=False)}. "
-                    f"{scope_note()} "
-                    "조건을 반영할 수 있는 도구가 없으면 전체 결과를 내지 말고 note_limitation으로 이유를 밝혀라.")
+    built = _build(reply, vocab, conditions, qc, question)
+    if built["uncovered"] or (not built["steps"] and built["hints"]):
+        # 질문 조건이 빠졌거나 계산 의도·필수 인자가 틀린 단계가 있으면 이유를 알려 주고 1번만 다시 계획하게 한다
+        feedback = f"{base_prompt}\n\n[이전 계획 검토 결과] "
+        if built["uncovered"]:
+            labels = ", ".join(c.label for c in built["uncovered"])
+            feedback += (f"질문의 조건({labels})이 분석 인자에 반영되지 않았다. "
+                         "모든 조건을 aggregate의 filters(또는 cost_vs_budget의 project_id 등)로 반드시 반영하라. "
+                         f"aggregate를 쓴다면 filters 예: {json.dumps(suggest_filters(conditions, as_of), ensure_ascii=False)}. "
+                         f"{scope_note()} ")
+        if built["hints"]:
+            feedback += ("다음 문제로 이전 계획을 실행할 수 없다: " + "; ".join(built["hints"][:4])
+                         + ". 질문이 요구한 계산(합계·비율·비교·월별)과 필요한 인자를 모두 채워 다시 계획하라. ")
+        feedback += "조건을 반영할 수 있는 도구가 없으면 전체 결과를 내지 말고 note_limitation으로 이유를 밝혀라."
         try:
-            retry = _build(llm.generate(SYSTEM_PROMPT, feedback, gemini_tool_declarations() + AGENT_TOOLS), vocab, conditions, qc)
+            retry = _build(llm.generate(SYSTEM_PROMPT, feedback, gemini_tool_declarations() + AGENT_TOOLS), vocab, conditions, qc, question)
             if retry["steps"] or not built["steps"]:
                 built = retry
         except Exception:  # noqa: BLE001 - 재시도 실패 시 첫 결과(조건 누락 단계는 이미 제외됨)를 쓴다
@@ -182,7 +207,7 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
     return _fail(question, as_of, "AI가 분석 계획을 만들지 못했습니다. 질문을 바꿔 다시 시도해 주세요. " + SUPPORTED_HINT, model)
 
 
-def _build(reply, vocab, conditions, qc=None) -> dict:
+def _build(reply, vocab, conditions, qc=None, question: str = "") -> dict:
     """LLM 응답 → 검증된 단계.
 
     - 단계마다: 질문의 범위 조건(부서·프로젝트·직원·상태·기간)을 종류별로 하나 이상 반영해야 한다 (아니면 제외).
@@ -199,14 +224,21 @@ def _build(reply, vocab, conditions, qc=None) -> dict:
         if msg not in notices:
             notices.append(msg)
 
-    steps, rejected, seen, uncovered = [], [], set(), []
+    steps, rejected, seen, uncovered, hints = [], [], set(), [], []
     for c in tool_calls:
         try:
             params, notes = validate_call(c["name"], c.get("args") or {}, vocab)
         except Rejected as exc:
             rejected.append(str(exc))
             continue
+        if c["name"] == "calculate_ratio":  # 분모가 빠졌고 후보가 하나뿐이면 채워서 승인 화면에 분모를 명시 (여럿이면 되묻기)
+            params = fill_ratio_denominator(params, vocab)
         mismatch = generic_mismatch(c["name"], params, qc, vocab) if qc is not None else []
+        if qc is not None:  # 계산 의도(합계↔비율, 비교 대상, 월별)가 질문과 같은지
+            wrong, intent_notes = intent_check(c["name"], params, question, qc, vocab)
+            mismatch += wrong
+            hints += [w for w in wrong if w not in hints]  # 재계획 때 무엇을 고쳐야 하는지 알려 준다
+            notes = notes + [n for n in intent_notes if n not in notes]
         if mismatch:  # 질문에 없는 컬럼으로 조용히 바꾼 계획은 실행 가능한 계획으로 내보내지 않는다
             rejected.append(f"{_purpose(c['name'], params)}: " + "; ".join(mismatch))
             continue
@@ -233,4 +265,4 @@ def _build(reply, vocab, conditions, qc=None) -> dict:
                      for s in steps]
         steps = []
     return {"steps": steps, "rejected": rejected, "notices": notices, "clarify": clarify, "uncovered": uncovered,
-            "limited": bool(limits)}
+            "limited": bool(limits), "hints": hints}

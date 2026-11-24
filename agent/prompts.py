@@ -76,8 +76,9 @@ def scope_note() -> str:
     """도구별 범위 인자 지원 현황. 실제 도구 스키마에서 계산하므로 엔진 버전이 바뀌어도 맞게 안내한다."""
     dept = [n for n in TOOLS if supports(n, "department")]
     proj = [n for n in TOOLS if supports(n, "project_id")]
-    none = [n for n in TOOLS if n not in dept and n not in proj and n != "aggregate"]
-    parts = ["aggregate는 filters로 부서·프로젝트·직원·상태·기한 조건을 모두 걸 수 있다"]
+    with_filters = [n for n in TOOLS if supports(n, "filters")]
+    none = [n for n in TOOLS if n not in dept and n not in proj and n not in with_filters]
+    parts = [f"{', '.join(with_filters)}는 filters로 부서·프로젝트·직원·상태·기한 조건을 모두 걸 수 있다"]
     if dept:
         parts.append(f"department 인자로 부서를 직접 받는 도구: {', '.join(dept)}")
     if proj:
@@ -102,7 +103,23 @@ def _scope_guidance() -> str:
     return "\n".join(lines)
 
 
-SYSTEM_PROMPT = _SYSTEM_TEMPLATE.replace("{scope_guidance}", _scope_guidance())
+def _new_tool_guidance() -> str:
+    """엔진 PR #38 기능 안내. 엔진에 실제로 있을 때만 프롬프트에 넣는다."""
+    from contracts import AggregateParams, Filter
+    lines = []
+    if "calculate_ratio" in TOOLS:
+        lines += ["- 비율·비중은 calculate_ratio. 질문이 비율·비중(…률·…율·비율·비중·%)을 묻지 않으면 절대 쓰지 않는다 (합계·개수 질문은 aggregate).",
+                  "  · …률·…율·A 대비 B 비율 → kind=column_ratio, value_column=분자, denominator_column=분모 (예: 불량률 = 불량수량 ÷ 생산수량)",
+                  "  · 조건에 맞는 행의 비율(예: 처리완료 비율) → kind=condition_rate, condition=[조건]",
+                  "  · 전체 대비 비중·점유율 → kind=share, value_column=합계할 값 (없으면 건수 비중)"]
+    if "period" in AggregateParams.model_fields:
+        lines.append("- 일 단위 날짜로 월별 추이·월별 합계를 물으면 aggregate(group_by=[날짜 컬럼], period='month'). 월별을 묻지 않으면 period를 쓰지 않는다.")
+    if "compare_column" in Filter.model_fields:
+        lines.append("- 같은 행의 두 컬럼을 비교(예: 안전재고보다 현재수량이 적은)하면 filters=[{column: 현재수량, op: '<', compare_column: 안전재고}].")
+    return ("\n추가 도구\n" + "\n".join(lines) + "\n") if lines else ""
+
+
+SYSTEM_PROMPT = _SYSTEM_TEMPLATE.replace("{scope_guidance}", _scope_guidance()) + _new_tool_guidance()
 
 
 def user_prompt(context: str, question: str) -> str:

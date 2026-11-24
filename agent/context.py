@@ -195,5 +195,8 @@ def render_context(ds: Dataset, vocab: Vocabulary) -> str:
     lines += ["", "자유 텍스트 컬럼(업무명·프로젝트명)은 분석·필터·묶음 기준으로 쓸 수 없다."]
     if vocab.roles:
         lines += ["역할이 '자유 텍스트'인 컬럼은 묶음 기준으로 쓰지 않는다. '식별자' 컬럼은 묶음 기준이 아니라 개별 기록 구분용이다.",
-                  "날짜(일) 컬럼은 compare_periods에서 두 달 비교(YYYY-MM)에 쓸 수 있다. 월 단위로 묶어 여러 달을 나열하는 도구는 없다."]
+                  "날짜(일) 컬럼은 compare_periods에서 두 달 비교(YYYY-MM)에 쓸 수 있다. " + (
+                      "여러 달을 월별로 나열하려면 aggregate(또는 calculate_ratio)의 period='month'를 쓴다."
+                      if "period" in __import__("contracts").AggregateParams.model_fields
+                      else "월 단위로 묶어 여러 달을 나열하는 도구는 없다.")]
     return "\n".join(lines)
