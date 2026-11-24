@@ -4,7 +4,9 @@
 * 승인 전에는 분석 도구가 실행되지 않는다.
 * 표와 차트는 같은 ToolResult.rows로 그린다.
 """
+import html as _html
 import json
+import math
 import re
 from pathlib import Path
 
@@ -131,6 +133,7 @@ if st.session_state.get("data_key") != data_key:
     st.session_state.pop("cancelled", None)
 
 st.subheader("2. 질문")
+st.toggle("그림 움직임", value=True, key="motion", help="끄면 움직임 없는 그림으로 표시합니다.")
 
 MONEY_COLS = ["예산", "실적 인건비", "실적 비인건비", "실적 총비용"]
 KAFE_EXAMPLES = [  # 발표용 질문 5개. 클릭하면 질문 입력창을 채워 주는 보조 기능 (직접 입력이 기본)
@@ -173,8 +176,147 @@ def num_label(v) -> str:
     return "" if pd.isna(v) else f"{v:,.2f}".rstrip("0").rstrip(".")
 
 
+def motion_on() -> bool:
+    """'그림 움직임' 스위치(기본 켜짐). 꺼져 있으면 움직임 없는 기존 그림을 쓴다."""
+    return bool(st.session_state.get("motion", True))
+
+
+def html_block(s: str):
+    """<style>·<svg>가 필요해서 st.html(제거됨) 대신 markdown을 쓴다. 우리가 만든 문자열만 넣고, 값은 모두 _esc로 이스케이프한다."""
+    st.markdown(s, unsafe_allow_html=True)
+
+
+# 움직임은 CSS 애니메이션만 쓴다 (스크립트·외부 라이브러리 없음). 색은 currentColor라 밝은/어두운 테마에 모두 맞는다.
+MOTION_CSS = """<style>
+.ti-title{font-weight:600;font-size:15px;margin:.2rem 0 .2rem;opacity:.9}
+.ti-svg{width:100%;height:auto;display:block;overflow:visible;margin-bottom:.8rem}
+.ti-svg text{fill:currentColor;font-size:12px}
+.ti-b{transform-box:view-box;transform:scaleY(0);animation:ti-grow .9s cubic-bezier(.16,1,.3,1) forwards}
+.ti-v,.ti-p{opacity:0;animation:ti-fade .5s ease-out forwards}
+.ti-l{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:ti-draw 1.3s ease-out .1s forwards}
+@keyframes ti-grow{to{transform:scaleY(1)}}
+@keyframes ti-fade{to{opacity:1}}
+@keyframes ti-draw{to{stroke-dashoffset:0}}
+@property --n{syntax:'<integer>';inherits:false;initial-value:0}
+@keyframes ti-cnt{from{--n:0}}
+.ti-card{padding:.3rem 0 .6rem}
+.ti-card .k{font-size:14px;opacity:.75}
+.ti-card .n{font-size:2.6rem;font-weight:600;line-height:1.25}
+.ti-count{counter-reset:ti-n var(--n);animation:ti-cnt 1.1s ease-out}
+.ti-count::after{content:counter(ti-n)}
+@media (prefers-reduced-motion:reduce){.ti-b,.ti-v,.ti-p,.ti-l,.ti-count{animation:none!important;transform:none!important;opacity:1!important;stroke-dashoffset:0!important}}
+</style>"""
+BAR_COLOR = "#4c78ff"
+
+
+def _esc(v) -> str:
+    return _html.escape(str(v), quote=True)
+
+
+def _nice_ticks(lo: float, hi: float, n: int = 5):
+    span = (hi - lo) or 1.0
+    mag = 10 ** math.floor(math.log10(span / n))
+    step = mag
+    for m in (1, 2, 2.5, 5, 10):
+        step = m * mag
+        if span / step <= n:
+            break
+    t0, t1 = math.floor(lo / step) * step, math.ceil(hi / step) * step
+    ticks, v = [], t0
+    while v <= t1 + step * 1e-6:
+        ticks.append(round(v, 10))
+        v += step
+    return ticks, t0, t1
+
+
+def _frame(cats, vals, xlabel, ylabel):
+    """막대·선이 함께 쓰는 틀(눈금·0선·축 이름). (그림 안쪽 좌표 함수, 눈금 SVG, 폭·높이 등)를 돌려준다."""
+    W, H, L, R, T = 800, 380, 70, 20, 18
+    B = 78 if len(cats) > 8 else 54
+    nums = [v for v in vals if v is not None]
+    ticks, t0, t1 = _nice_ticks(min([0.0] + nums), max([0.0] + nums))
+    ph = H - B - T
+    ymap = lambda v: T + (t1 - v) / ((t1 - t0) or 1.0) * ph
+    parts = []
+    for t in ticks:
+        y = ymap(t)
+        parts.append(f'<line x1="{L}" x2="{W - R}" y1="{y:.1f}" y2="{y:.1f}" stroke="currentColor" stroke-opacity=".15"/>'
+                     f'<text x="{L - 8}" y="{y + 4:.1f}" text-anchor="end" opacity=".7">{_esc(num_label(t))}</text>')
+    y0 = ymap(0)
+    parts.append(f'<line x1="{L}" x2="{W - R}" y1="{y0:.1f}" y2="{y0:.1f}" stroke="currentColor" stroke-width="2" stroke-opacity=".8"/>')  # 0 기준선
+    parts.append(f'<text x="16" y="{T + ph / 2:.0f}" text-anchor="middle" opacity=".7" transform="rotate(-90 16 {T + ph / 2:.0f})">{_esc(ylabel)}</text>')
+    parts.append(f'<text x="{(L + W - R) / 2:.0f}" y="{H - 6}" text-anchor="middle" opacity=".7">{_esc(xlabel)}</text>')
+    return dict(W=W, H=H, L=L, R=R, B=B, ymap=ymap, y0=y0, grid="".join(parts), band=(W - L - R) / max(len(cats), 1))
+
+
+def _cat_label(cx, f, c, n) -> str:
+    c = c if len(c) <= 10 else c[:9] + "…"
+    y = f["H"] - f["B"] + 16
+    rot = f' transform="rotate(-35 {cx:.1f} {y})" text-anchor="end"' if n > 8 else ' text-anchor="middle"'
+    return f'<text x="{cx:.1f}" y="{y}"{rot} opacity=".8">{_esc(c)}</text>'
+
+
+def svg_bar(cats: list, vals: list, title: str, xlabel: str, ylabel: str) -> str:
+    f, n, out = _frame(cats, vals, xlabel, ylabel), len(cats), []
+    bw = min(f["band"] * 0.62, 70)
+    for i, (c, v) in enumerate(zip(cats, vals)):
+        cx = f["L"] + f["band"] * (i + 0.5)
+        out.append(_cat_label(cx, f, c, n))
+        if v is None:
+            continue
+        yv = f["ymap"](v)
+        top, h = min(yv, f["y0"]), max(abs(yv - f["y0"]), 1)
+        out.append(f'<rect class="ti-b" x="{cx - bw / 2:.1f}" y="{top:.1f}" width="{bw:.1f}" height="{h:.1f}" rx="2" fill="{BAR_COLOR}" '
+                   f'style="transform-origin:{cx:.1f}px {f["y0"]:.1f}px;animation-delay:{i * 55}ms"><title>{_esc(c)}: {_esc(num_label(v))}</title></rect>')
+        ly = yv - 6 if v >= 0 else yv + 16
+        out.append(f'<text class="ti-v" x="{cx:.1f}" y="{ly:.1f}" text-anchor="middle" style="animation-delay:{i * 55 + 500}ms">{_esc(num_label(v))}</text>')
+    return (f'{MOTION_CSS}<div class="ti-title">{_esc(title)}</div>'
+            f'<svg class="ti-svg" viewBox="0 0 {f["W"]} {f["H"]}" role="img" aria-label="{_esc(title)}">{f["grid"]}{"".join(out)}</svg>')
+
+
+def svg_line(cats: list, vals: list, title: str, xlabel: str, ylabel: str) -> str:
+    f, n, out = _frame(cats, vals, xlabel, ylabel), len(cats), []
+    pts = [(f["L"] + f["band"] * (i + 0.5), f["ymap"](v), c, v) for i, (c, v) in enumerate(zip(cats, vals)) if v is not None]
+    for i, c in enumerate(cats):
+        out.append(_cat_label(f["L"] + f["band"] * (i + 0.5), f, c, n))
+    if len(pts) >= 2:
+        d = "M" + " L".join(f"{x:.1f} {y:.1f}" for x, y, _, _ in pts)
+        length = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:])) + 2
+        out.append(f'<path class="ti-l" d="{d}" fill="none" stroke="{BAR_COLOR}" stroke-width="3" stroke-linejoin="round" style="--len:{length:.0f}"/>')
+    for i, (x, y, c, v) in enumerate(pts):
+        dl = 300 + int(1000 * i / max(len(pts), 1))
+        out.append(f'<circle class="ti-p" cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="{BAR_COLOR}" style="animation-delay:{dl}ms"><title>{_esc(c)}: {_esc(num_label(v))}</title></circle>'
+                   f'<text class="ti-v" x="{x:.1f}" y="{y - 10:.1f}" text-anchor="middle" style="animation-delay:{dl + 200}ms">{_esc(num_label(v))}</text>')
+    return (f'{MOTION_CSS}<div class="ti-title">{_esc(title)}</div>'
+            f'<svg class="ti-svg" viewBox="0 0 {f["W"]} {f["H"]}" role="img" aria-label="{_esc(title)}">{f["grid"]}{"".join(out)}</svg>')
+
+
+def _series(df: pd.DataFrame, x: str, y: str):
+    vals = pd.to_numeric(df[y], errors="coerce")
+    return df[x].astype(str).tolist(), [None if pd.isna(v) else float(v) for v in vals]
+
+
+def big_number(label: str, value, unit: str):
+    """숫자 카드. 움직임이 켜져 있고 0~9999 정수면 0에서 올라가고, 아니면 기존 st.metric."""
+    num = pd.to_numeric(value, errors="coerce")
+    if motion_on() and pd.notna(num) and float(num).is_integer() and 0 <= num <= 9999:
+        try:
+            html_block(f'{MOTION_CSS}<div class="ti-card"><div class="k">{_esc(label)}</div>'
+                    f'<div class="n"><span class="ti-count" style="--n:{int(num)}"></span> {_esc(unit)}</div></div>')
+            return
+        except Exception:  # noqa: BLE001 - 움직임이 안 되는 환경이면 기존 카드로
+            pass
+    st.metric(label, f"{num_label(value)} {unit}".strip())
+
+
 def draw_bar(df: pd.DataFrame, x: str, y: str, title: str, key: str):
     """막대차트: 표와 같은 rows·같은 순서. 음수는 0선 아래로, 0 기준선을 굵게, 막대 위에 값을 적는다."""
+    if motion_on():  # 막대가 0에서 자라는 움직임 (실패하면 아래 기존 그림)
+        try:
+            html_block(svg_bar(*_series(df, x, y), title, x, y))
+            return
+        except Exception:  # noqa: BLE001
+            pass
     vals = pd.to_numeric(df[y], errors="coerce")
     cats = df[x].astype(str).tolist()
     fig = go.Figure(go.Bar(x=cats, y=vals, text=vals.map(num_label), textposition="outside", cliponaxis=False))
@@ -204,12 +346,12 @@ def kpi_visual(tool: str, r, df: pd.DataFrame, key: str) -> bool:
         return False
     if tool == "count_overdue_tasks" and {"업무ID", "초과 일수"} <= set(df.columns):
         total = r.value if r.value is not None else len(df)
-        st.metric("기한이 지난 미완료 업무", f"{num_label(total)} {r.unit}")
+        big_number("기한이 지난 미완료 업무", total, r.unit)
         draw_bar(df, "업무ID", "초과 일수", "업무별 기한 초과 일수 — 초과 일수(일)", key)
         return True
     if tool == "check_missing_data" and {"업무ID", "컬럼"} <= set(df.columns):
         total = r.value if r.value is not None else df["업무ID"].nunique()
-        st.metric("확인이 필요한 업무", f"{num_label(total)} {r.unit}")
+        big_number("확인이 필요한 업무", total, r.unit)
         by = df.groupby("컬럼", sort=False).size().rename("건수").reset_index()
         draw_bar(by, "컬럼", "건수", "빈칸 종류별 건수 — 건수(건)", key)
         return True
@@ -245,6 +387,12 @@ def pick_value_column(tool: str, df: pd.DataFrame):
 
 
 def draw_line(df: pd.DataFrame, x: str, y: str, title: str, key: str):
+    if motion_on():  # 선이 왼쪽부터 그려지는 움직임 (실패하면 아래 기존 그림)
+        try:
+            html_block(svg_line(*_series(df, x, y), title, x, y))
+            return
+        except Exception:  # noqa: BLE001
+            pass
     vals = pd.to_numeric(df[y], errors="coerce")
     cats = df[x].astype(str).tolist()
     fig = go.Figure(go.Scatter(x=cats, y=vals, mode="lines+markers+text", text=vals.map(num_label),
@@ -272,7 +420,7 @@ def auto_visual(s, r, df: pd.DataFrame, key: str) -> bool:
     cols = numeric_cols(df)
     if len(df) == 1:  # 한 줄 결과: 숫자 카드
         if r.value is not None:
-            st.metric(s.purpose, f"{num_label(r.value)} {r.unit}".strip())
+            big_number(s.purpose, r.value, r.unit)
             return True
         shown = cols[:4]
         if not shown:
