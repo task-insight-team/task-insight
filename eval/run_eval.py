@@ -33,7 +33,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent import approve_plan, create_plan, execute_plan  # noqa: E402
-from agent.llm import GeminiClient, LLMError  # noqa: E402
+from agent.llm import GeminiClient, LLMError, find_api_key  # noqa: E402
 from contracts import ToolResult  # noqa: E402
 from engine import load_dataset  # noqa: E402
 
@@ -63,6 +63,10 @@ UNMEASURED = "측정 못 함"  # 결과 종류(outcome)
 QUOTA_WAIT_S = 45.0  # 분당 한도가 풀릴 때까지 기다리는 시간
 QUOTA_RETRIES = 2  # 한도 초과 질문을 다시 돌리는 최대 횟수
 QUOTA_STOP_AFTER = 3  # 연속 이만큼의 질문이 끝까지 한도 초과면 일일 한도로 보고 나머지는 실행하지 않는다
+# 키 없음·잘못된 키·없는 모델: 다시 해도 같으므로 그 자리에서 멈추고 남은 질문은 실행하지 않는다 (측정 못 함)
+SETUP = "setup"  # Run.status
+SETUP_KINDS = ("no_api_key", "auth", "model")
+UNMEASURED_STATUSES = (QUOTA, SETUP)
 
 KAFE_AS_OF = "2026-11-19"
 SAMPLE_AS_OF = "2026-02-28"  # sample.csv 마지막 달. '전월 대비'의 기준 달이 2026-02가 되게 한다
@@ -147,8 +151,8 @@ def load_datasets() -> dict:
     return {"kafe": kafe.dataset, "sample": sample.dataset, **{k: g.dataset for k, g in general.items()}}
 
 
-def _run_once(q: Question, ds: Any, llm_factory: Optional[Callable[[Question], Any]]) -> tuple[Run, bool]:
-    """질문 1개를 한 번 실행한다. (결과, 도중에 한도 초과가 있었는지)."""
+def _run_once(q: Question, ds: Any, llm_factory: Optional[Callable[[Question], Any]]) -> tuple[Run, list[str]]:
+    """질문 1개를 한 번 실행한다. (결과, 도중에 난 LLM 오류 종류 목록)."""
     start = time.perf_counter()
     llm = _Counting((lambda q=q: llm_factory(q)) if llm_factory else GeminiClient)
     plan = create_plan(q.text, ds, q.as_of, llm)
@@ -161,7 +165,7 @@ def _run_once(q: Question, ds: Any, llm_factory: Optional[Callable[[Question], A
                   calls=[{"tool": s.tool, "params": s.result.params} for s in out.steps],
                   results=[s.result for s in out.steps], seconds=time.perf_counter() - start,
                   stage="exec", **meta)
-    return run, "quota" in llm.errors
+    return run, llm.errors
 
 
 def run_questions(questions: list[Question], datasets: dict, llm_factory: Optional[Callable[[Question], Any]] = None,
@@ -173,24 +177,36 @@ def run_questions(questions: list[Question], datasets: dict, llm_factory: Option
     한도 초과(429)가 한 번이라도 난 질문은 결과를 버리고 quota_wait초 뒤 처음부터 다시 돌린다 (최대 quota_retries번).
     에이전트가 오류를 삼켜 다른 결과를 냈어도(재계획 호출 실패 등) 다시 돌린다. 그래도 안 되면 status=quota(측정 못 함).
     연속 quota_stop_after개 질문이 측정 못 함이면 일일 한도로 보고 남은 질문은 실행하지 않는다.
+    키 없음·잘못된 키·없는 모델(SETUP_KINDS)은 다시 해도 같으므로 그 질문부터 status=setup(측정 못 함)으로 두고 멈춘다.
     """
     runs: list[Run] = []
     streak = 0
+    stopped: Optional[str] = None
     for i, q in enumerate(questions):
-        if streak >= quota_stop_after:
+        if stopped:
+            run = Run(q.id, q.text, SETUP, stopped, set=q.set, same_as=q.same_as)
+        elif streak >= quota_stop_after:
             run = Run(q.id, q.text, QUOTA, f"앞의 {streak}개 질문이 연속으로 한도 초과라 실행하지 않았습니다 (일일 한도 가능성)",
                       set=q.set, same_as=q.same_as)
         else:
             if i and delay:
                 sleep(delay)  # 무료 등급 분당 호출 한도
-            run, hit = _run_once(q, datasets[q.dataset], llm_factory)
+            run, errors = _run_once(q, datasets[q.dataset], llm_factory)
             tries = 0
-            while hit and tries < quota_retries:
+            while "quota" in errors and tries < quota_retries:
                 tries += 1
                 sleep(quota_wait)
-                run, hit = _run_once(q, datasets[q.dataset], llm_factory)
+                run, errors = _run_once(q, datasets[q.dataset], llm_factory)
             run.retries = tries
-            if hit:  # 한도 초과 중에 나온 결과는 믿을 수 없어 버린다
+            hit = "quota" in errors
+            setup = next((k for k in errors if k in SETUP_KINDS), None)
+            if setup:  # 설정 문제: 이 질문과 남은 질문 모두 실행하지 않은 것으로 (오답이 아님)
+                stopped = (f"Gemini 설정 오류로 측정하지 못했습니다: {LLMError.MESSAGES[setup]} "
+                           "남은 질문은 실행하지 않았습니다.")
+                run = Run(q.id, q.text, SETUP, stopped, set=q.set, same_as=q.same_as,
+                          llm_calls=run.llm_calls, model=run.model, seconds=run.seconds)
+                hit = False
+            elif hit:  # 한도 초과 중에 나온 결과는 믿을 수 없어 버린다
                 run = Run(q.id, q.text, QUOTA, f"Gemini 사용 한도 초과로 측정하지 못했습니다 (다시 시도 {tries}회)",
                           set=q.set, same_as=q.same_as, llm_calls=run.llm_calls, model=run.model,
                           seconds=run.seconds, retries=tries)
@@ -317,7 +333,7 @@ def grade(runs: list[Run]) -> list[dict]:
         rules = specs.get(run.same_as or run.id, [])
         kind = kinds.get(run.id) if run.set in FILE_SETS else None
         shown_ok = any(r.ok for r in run.results)
-        if run.status == QUOTA:  # 에이전트 실력과 무관: 정답도 오답도 아니다 (정답률 분모에서 뺀다)
+        if run.status in UNMEASURED_STATUSES:  # 에이전트 실력과 무관: 정답도 오답도 아니다 (정답률 분모에서 뺀다)
             ok, reasons = False, [run.message]
         elif kind == "limit" and not shown_ok:
             # 한계 질문: 숫자 없이 정직하게 거절하면 통과 (API 오류는 오답)
@@ -344,14 +360,14 @@ def grade(runs: list[Run]) -> list[dict]:
                        "outcome": _outcome(run, ok, kind), "status": run.status, "calls": run.calls,
                        "reason": "; ".join(reasons), "seconds": round(run.seconds, 1),
                        "llm_calls": run.llm_calls, "model": run.model,
-                       "measured": run.status != QUOTA, "retries": run.retries})
+                       "measured": run.status not in UNMEASURED_STATUSES, "retries": run.retries})
     return report
 
 
 def _outcome(run: Run, ok: bool, kind: Optional[str]) -> str:
     """결과 종류: 정답 / 정직한 거절 / 오답 / 대체 분석 / 답하지 못함 / 오류 (범용성 측정 분류용)."""
     shown = any(r.ok for r in run.results)
-    if run.status == QUOTA:
+    if run.status in UNMEASURED_STATUSES:
         return UNMEASURED
     if run.stage == "plan" and run.status == "error":
         return "오류"
@@ -388,7 +404,8 @@ def summary_md(report: list[dict]) -> str:
     models = sorted({r["model"] for r in report if r["model"]})
     lines += ["", f"모델: {', '.join(models) or '-'} · 시간은 질문 1개의 계획(LLM)+실행(엔진) 전체"]
     if any(not r.get("measured", True) for r in report):
-        lines.append(f"'{UNMEASURED}' = Gemini 사용 한도 초과로 다시 시도해도 실행하지 못한 질문 (정답률 분모에서 제외)")
+        lines.append(f"'{UNMEASURED}' = Gemini 사용 한도 초과(다시 시도해도 실패) 또는 설정 오류(키 없음·잘못된 키·없는 모델)로 "
+                     "실행하지 못한 질문 (정답률 분모에서 제외)")
     for name in FILE_SETS:  # 범용성 측정: 종류(answer·limit·refuse)별 결과 분류
         part_set = [r for r in report if r["set"] == name]
         if not part_set:
@@ -422,6 +439,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--quota-retries", type=int, default=QUOTA_RETRIES, help="한도 초과 질문을 다시 돌리는 최대 횟수")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
+    if not find_api_key():  # 키 없이 돌면 모든 질문이 '오류'로 끝나 결과가 쓸모없다 → 시작 전에 멈춘다
+        print("Gemini API 키(GEMINI_API_KEY)가 없어 측정을 시작하지 않았습니다. 이 터미널에서 키를 넣은 뒤 다시 실행하세요:\n"
+              '  $env:GEMINI_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringAuto('
+              '[Runtime.InteropServices.Marshal]::SecureStringToBSTR((Read-Host "Gemini 키" -AsSecureString)))\n'
+              "  (명령을 그대로 실행하고, 'Gemini 키:' 입력 칸이 나오면 그때 키를 붙여 넣습니다)", file=sys.stderr)
+        return 2
 
     sets = SETS if args.set == "all" else (args.set,)
     questions = [q for q in load_questions(sets) if not args.only or q.id in args.only]
