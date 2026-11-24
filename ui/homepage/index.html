@@ -149,6 +149,21 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 .st:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--sub)}
 .st.on:before{background:var(--red)}
 .st.done:before{background:#fff}
+.st.soon:before{background:transparent;border:1px solid var(--sub)}
+.card.proposal{cursor:pointer;outline-offset:6px}
+.card.proposal .card-img{outline:1px dashed var(--red-dim);outline-offset:-1px}
+.card.proposal .more{margin-top:10px;font-size:13px;font-weight:600;color:var(--red)}
+#poc{margin:auto;width:min(640px,calc(100vw - 32px));max-height:calc(100svh - 48px);overflow-x:hidden;overflow-y:auto;background:#111;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:clamp(22px,4vw,40px)}
+#poc::backdrop{background:rgba(0,0,0,.72)}
+#poc h3{font-size:clamp(20px,2.4vw,26px);font-weight:600;letter-spacing:-.02em;line-height:1.35;padding-right:36px}
+#poc .x{position:absolute;top:14px;right:16px;font-size:26px;line-height:1;color:var(--sub);padding:6px 10px}
+#poc .x:hover{color:#fff}
+#poc .note{margin-top:14px;color:var(--sub);font-size:15px;line-height:1.7}
+#poc ol{margin-top:22px;padding-left:22px;display:grid;gap:12px;font-size:15px;line-height:1.65}
+#poc ol li::marker{color:var(--red);font-weight:700}
+#poc .later,#poc .risk{margin-top:18px;font-size:13px;line-height:1.7;color:var(--sub)}
+#poc .risk{color:var(--red)}
+#poc .go{display:inline-block;margin-top:24px;font-size:13px;font-weight:600;border-bottom:1px solid var(--red)}
 
 /* trap */
 #trap{background:#000}
@@ -415,6 +430,17 @@ footer .logo{color:#fff}
   <div><p data-t="ftTools"></p><p data-t="ftRef"></p></div>
 </footer>
 
+<!-- 확장 검토 카드를 누르면 열리는 1단계 PoC 범위 (내용은 DATA.proposals) -->
+<dialog id="poc" data-lenis-prevent aria-labelledby="pocTitle">
+  <button class="x" type="button" aria-label="닫기">×</button>
+  <h3 id="pocTitle"></h3>
+  <p class="note"></p>
+  <ol></ol>
+  <p class="later"></p>
+  <p class="risk"></p>
+  <a class="go" href="#" target="_blank" rel="noopener">이슈 #46에서 전체 내용 보기 →</a>
+</dialog>
+
 <script src="https://cdn.jsdelivr.net/npm/lenis@1.1.13/dist/lenis.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
@@ -441,6 +467,23 @@ const DATA = {
     { id:"P08", name:"센서 제품군 방폭·EMC 인증 취득", type:"인증 취득", status:"보류", lead:"품질", start:"2026-03-02", end:"2026-10-30" },
     { id:"P09", name:"ERP·MES 생산실적 연계 시스템 구축", type:"경영 시스템", status:"진행중", lead:"경영지원", start:"2026-02-02", end:"2026-11-30" },
     { id:"P10", name:"습도센서 HS-50 2차 양산 이관", type:"양산 이관", status:"진행중", lead:"제조", start:"2026-09-14", end:"2027-03-31" }
+  ],
+  /* 확장 검토(제안 단계): 구현된 기능이 아닙니다. 카드를 누르면 1단계 PoC 범위가 열립니다. */
+  proposals: [
+    { id:"EXT", name:"단계별 공정관리 확장 검토", type:"확장 검토", status:"검토중", image:"images/proposal-process.svg",
+      lead:"선후행·크리티컬 패스·진척률(SPI) 도구를 설계 중 (검토 단계, 이슈 #46)",
+      issue:"https://github.com/task-insight-team/task-insight/issues/46",
+      scopeTitle:"1단계 PoC 범위",
+      scopeNote:"선박·플랜트 같은 단계별 공정관리에 쓸 수 있는지 먼저 작게 검증합니다. 아직 구현된 기능이 아니며, 도구 이름과 일정은 확정이 아닙니다.",
+      scope:[
+        "선박(블록 조립) 또는 플랜트(배관 시공) 가상 공정 데이터 추가: 작업 표와 선후행 표",
+        "도구 4개 설계 확정: 크리티컬 패스, 진척률(EV·SPI·CPI), 병목(대기시간), 공정별 리드타임",
+        "정답표 먼저 작성: 손계산한 값을 고정 파일로 두고 구현을 검증",
+        "현장 담당자에게 실제 질문 10~20개 수집 후 평가 묶음으로 정리",
+        "기존 원칙 점검: 일반 CSV 컬럼 매핑 규칙(#34)과 새 도구가 충돌하지 않는지 확인"
+      ],
+      later:"이후 단계: 현장 입력 폼, API 계층, 음성·스마트안경(참고 정보까지만, 안전 제어에는 쓰지 않음)",
+      risk:"가장 큰 위험: 현장이 이런 질문을 실제로 하는지 아직 검증되지 않았습니다." }
   ]
 };
 
@@ -540,6 +583,29 @@ DATA.projects.forEach(p => {
   imgSlot(c.querySelector(".card-img"), p.id.toLowerCase(), p.name);
   track.appendChild(c);
 });
+
+/* 확장 검토 카드: 누르면 1단계 PoC 범위 */
+const poc = document.getElementById("poc");
+DATA.proposals.forEach(p => {
+  const c = document.createElement("article"); c.className = "card proposal"; c.tabIndex = 0; c.setAttribute("role", "button");
+  c.setAttribute("aria-label", `${p.name} - 눌러서 ${p.scopeTitle} 보기`);
+  c.innerHTML = `<div class="card-img"><span class="pid">${p.id}</span></div><h5>${p.name}</h5><div class="tags"><span>#${p.type}</span><span class="st soon">${p.status}</span></div><div class="meta">${p.lead}</div><div class="more">${p.scopeTitle} 보기 →</div>`;
+  const im = new Image(); im.alt = p.name; im.src = p.image; c.querySelector(".card-img").appendChild(im);
+  const open = () => {
+    poc.querySelector("h3").textContent = `${p.name} · ${p.scopeTitle}`;
+    poc.querySelector(".note").textContent = p.scopeNote;
+    poc.querySelector("ol").innerHTML = p.scope.map(s => `<li>${s}</li>`).join("");
+    poc.querySelector(".later").textContent = p.later;
+    poc.querySelector(".risk").textContent = p.risk;
+    poc.querySelector("a").href = p.issue;
+    poc.showModal();
+  };
+  c.addEventListener("click", open);
+  c.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  track.appendChild(c);
+});
+poc.querySelector(".x").addEventListener("click", () => poc.close());
+poc.addEventListener("click", e => { if (e.target === poc) poc.close(); });  /* 바깥(어두운 영역) 클릭으로 닫기 */
 
 /* 함정 숫자 */
 document.getElementById("vRight").textContent = DATA.budgetRight.toFixed(2) + DATA.budgetUnit;

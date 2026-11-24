@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800" role="img" aria-label="단계별 공정관리: 선후행 관계와 크리티컬 패스를 나타낸 개념도 (가상 예시)">
+  <rect width="600" height="800" fill="#111"/>
+  <g stroke="rgba(255,255,255,.06)" stroke-width="1">
+    <path d="M0 100H600M0 200H600M0 300H600M0 400H600M0 500H600M0 600H600M0 700H600"/>
+    <path d="M100 0V800M200 0V800M300 0V800M400 0V800M500 0V800"/>
+  </g>
+  <!-- 비크리티컬 간선 -->
+  <g stroke="#6b6b6b" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M150 210 L150 330"/>
+    <path d="M150 330 L300 470"/>
+    <path d="M300 250 L450 330"/>
+    <path d="M450 330 L450 470"/>
+    <path d="M450 470 L300 600"/>
+    <path d="M150 210 L300 250"/>
+  </g>
+  <!-- 크리티컬 패스 -->
+  <g stroke="#e60023" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M150 210 L300 250 L300 470 L300 600 L300 700"/>
+  </g>
+  <!-- 노드 -->
+  <g font-family="Pretendard, system-ui, sans-serif" font-size="22" font-weight="700" text-anchor="middle">
+    <g>
+      <circle cx="150" cy="210" r="34" fill="#e60023"/><text x="150" y="218" fill="#fff">A</text>
+      <circle cx="300" cy="250" r="34" fill="#e60023"/><text x="300" y="258" fill="#fff">B</text>
+      <circle cx="300" cy="470" r="34" fill="#e60023"/><text x="300" y="478" fill="#fff">E</text>
+      <circle cx="300" cy="600" r="34" fill="#e60023"/><text x="300" y="608" fill="#fff">G</text>
+      <circle cx="300" cy="700" r="34" fill="#fff"/><text x="300" y="708" fill="#111">H</text>
+    </g>
+    <g>
+      <circle cx="150" cy="330" r="30" fill="#111" stroke="#a3a3a3" stroke-width="3"/><text x="150" y="338" fill="#a3a3a3">C</text>
+      <circle cx="450" cy="330" r="30" fill="#111" stroke="#a3a3a3" stroke-width="3"/><text x="450" y="338" fill="#a3a3a3">D</text>
+      <circle cx="450" cy="470" r="30" fill="#111" stroke="#a3a3a3" stroke-width="3"/><text x="450" y="478" fill="#a3a3a3">F</text>
+    </g>
+  </g>
+  <g font-family="Pretendard, system-ui, sans-serif" fill="#a3a3a3" font-size="15" font-weight="600">
+    <text x="190" y="372" fill="#6b6b6b">슬랙 +3일</text>
+    <text x="490" y="372" fill="#6b6b6b">슬랙 +2일</text>
+    <text x="360" y="535" fill="#e60023">슬랙 0</text>
+  </g>
+  <g font-family="Pretendard, system-ui, sans-serif">
+    <text x="50" y="80" fill="#e60023" font-size="15" font-weight="700" letter-spacing="2">CRITICAL PATH</text>
+    <text x="50" y="118" fill="#fff" font-size="30" font-weight="300">Step by Step</text>
+    <text x="50" y="770" fill="#6b6b6b" font-size="13">개념 예시 · 가상 데이터 · 구현 전 검토안</text>
+  </g>
+</svg>
