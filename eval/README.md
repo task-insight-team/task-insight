@@ -25,6 +25,17 @@ python -m eval.run_eval --out eval_result.json # 질문별 도구·인자·판�
 python -m eval.run_eval --set general --quota-wait 60 --quota-retries 3   # 무료 키로 반복 측정할 때
 ```
 
+### 반복 측정 (`--repeat N`)
+Gemini는 같은 질문·같은 프롬프트에도 계획이 조금씩 달라질 수 있어, 1회 측정은 ±1~2문제 흔들린다. 같은 묶음을 N번 돌려 범위를 본다.
+- 출력: 묶음별 회차 점수(예: `2/2, 1/2, 2/2`)와 평균·최소~최대, **흔들린 질문**(어떤 회차엔 맞고 어떤 회차엔 틀림), 질문별 정답 횟수
+- 한도 초과·설정 오류로 측정 못 한 회차는 그 질문의 분모에서 뺀다 (흔들림으로 보지 않음)
+- 회차 사이 `--round-wait`(기본 10초) 대기. Gemini 호출이 N배라 무료 키에서는 작은 묶음(`demo` 5문항 등)부터
+- `--out`은 `{"summary": …, "rounds": [회차별 결과]}`, `--md`는 반복 측정 표. `--repeat`를 안 주면 지금 형식 그대로
+- 종료 코드: 모든 회차·모든 질문이 맞으면 0, 아니면 1
+```powershell
+python -m eval.run_eval --set demo --repeat 3 --out eval_demo_x3.json --md eval_demo_x3.md   # Gemini 약 15회
+```
+
 ## 질문 묶음 (`--set`)
 | 묶음 | 질문 | 정답 기준 |
 |---|---|---|
