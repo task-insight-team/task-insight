@@ -16,7 +16,7 @@ from agent.context import build_vocabulary, render_context, show
 from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, fill_ratio_denominator,
                          AGG_FN, generic_mismatch, intent_check,
                          generic_unsupported,
-                         missing_concepts, plan_missing, question_columns,
+                         missing_concepts, open_term_check, open_term_hint, plan_missing, question_columns,
                          visible_columns,
                          step_scope_missing, suggest_filters, validate_call)
 from agent.llm import GeminiClient, LLMClient, LLMError
@@ -152,6 +152,9 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
                                      f"사용할 수 있는 컬럼({cols_text}) 중 어느 것으로 나눌지 알려 주세요."))
     conditions = extract_conditions(question, vocab)
     base_prompt = user_prompt(render_context(ds, vocab), question)
+    column_hint = open_term_hint(qc, CLARIFY_TOOL, LIMIT_TOOL)  # (TI_COLUMN_HINTS ON) 이름이 다른 후보 컬럼 안내, OFF면 ""
+    if column_hint:
+        base_prompt += "\n\n" + column_hint
     try:
         llm = llm or GeminiClient()
         reply = llm.generate(SYSTEM_PROMPT, base_prompt, gemini_tool_declarations() + AGENT_TOOLS)
@@ -243,6 +246,11 @@ def _build(reply, vocab, conditions, qc=None, question: str = "") -> dict:
             params = fill_ratio_denominator(params, vocab)
         mismatch = generic_mismatch(c["name"], params, qc, vocab) if qc is not None else []
         hints += [m for m in mismatch if m.startswith("질문의 묶음 기준") and m not in hints]  # 빠진 'X별'은 재계획으로 고칠 수 있음
+        if qc is not None:  # (TI_COLUMN_HINTS ON) 이름이 다른 용어를 후보 컬럼 하나에 정확히 대응시켰는지
+            wrong_cols, col_notes = open_term_check(c["name"], params, qc, vocab)
+            mismatch += wrong_cols
+            hints += [w for w in wrong_cols if w not in hints]
+            notes = notes + [n for n in col_notes if n not in notes]
         if qc is not None:  # 계산 의도(합계↔비율, 비교 대상, 월별)가 질문과 같은지
             wrong, intent_notes = intent_check(c["name"], params, question, qc, vocab)
             mismatch += wrong

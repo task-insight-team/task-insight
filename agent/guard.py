@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -388,6 +389,7 @@ class QuestionCols:
     metric_cols: set = field(default_factory=set)  # 질문에 나온 숫자 컬럼 (지표)
     verbatim_numeric: set = field(default_factory=set)  # 이름이 질문에 그대로 나온 숫자 컬럼
     month_from_daily: bool = False  # '월별'인데 일 단위 날짜 컬럼만 있음
+    open_terms: list = field(default_factory=list)  # (TI_COLUMN_HINTS ON) 이름은 다르지만 의미가 같을 수 있는 후보 컬럼이 있는 용어
 
 
 def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
@@ -405,7 +407,11 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
             elif label == "가격" and engine_has("percent") and unit_price_needed(question, vocab):
                 continue  # 합계 ÷ 합계(예: 매출액 ÷ 판매수량)로 계산 가능 → 계획 단계에서 나눗셈을 검사
             elif not _inside_value(m.group(0), question, vocab):  # '제품불량'처럼 데이터 값의 일부면 컬럼 요청이 아님
-                qc.missing_terms.append(label)
+                cands = open_candidates(label, vocab)  # 스위치 OFF·표준 데이터·후보 없음이면 빈 목록 → 기존처럼 '없는 정보'
+                if cands:
+                    qc.open_terms.append(OpenTerm(label, m.group(0), TERM_KIND[label], cands))
+                else:
+                    qc.missing_terms.append(label)
     for c in cols:  # 컬럼 이름 자체가 질문에 나온 경우 (sales, 건수 등)
         if len(c) >= 2 and (c.lower() in question.lower() or (show(c) != c and show(c) in question)):
             qc.mention_cols.add(c)
@@ -414,7 +420,7 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
             word = (m.group(1) or m.group(2) or "").strip()
             if not word:
                 continue
-            target = set()
+            target, matched = set(), None
             if word in ("부서", "팀"):  # 부서 정보가 있는지는 REQUIRED_CONCEPTS가 확인, 여기서는 해당 컬럼에 대응
                 target = set(_matching_cols(vocab, ("부서", "dept", "department", "team", "팀")))
                 if not target:
@@ -427,7 +433,7 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
             else:
                 for label, rx, aliases in BUSINESS_TERMS:
                     if rx.search(word):
-                        target = set(_matching_cols(vocab, aliases))
+                        target, matched = set(_matching_cols(vocab, aliases)), label
                         break
                 else:
                     target = {c for c in cols if word.lower() == c.lower() or word == show(c)
@@ -435,8 +441,16 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
             if target:
                 qc.group_cols |= target
                 qc.mention_cols |= target
+            elif matched and any(t.label == matched for t in qc.open_terms):  # '고객별' → 의미 해석 후보로 묶음
+                for t in qc.open_terms:
+                    if t.label == matched:
+                        t.group = True
             elif not any(word == t for t in qc.missing_terms):
-                qc.unknown_groups.append(word)
+                cands = [] if matched else open_group_candidates(vocab, qc)
+                if cands:  # (스위치 ON) 이름이 같은 컬럼은 없지만 묶을 수 있는 후보가 있음 → 계획 후 검증
+                    qc.open_terms.append(OpenTerm(word, word, "category", cands, group=True))
+                else:
+                    qc.unknown_groups.append(word)
     # 지표: 질문에 컬럼 이름이 그대로 나오면 그 컬럼만 (예: '불량수량 합계' → 불량수량, 생산수량은 아님)
     verbatim = {c for c in cols if cols.get(c) == "숫자" and len(c) >= 2 and c.lower() in question.lower()}
     qc.metric_cols = verbatim or {c for c in qc.mention_cols if cols.get(c) == "숫자"}
@@ -465,6 +479,192 @@ def engine_has(feature: str) -> bool:
         from contracts import RatioParams
         return "percent" in RatioParams.model_fields
     return False
+
+
+# ---------------------------------------------------------------------------
+# 컬럼 의미 해석 (기능 스위치 TI_COLUMN_HINTS, 기본 OFF, 일반 CSV만)
+# 질문 용어(고객·매출 등)나 'X별'의 X와 이름이 같은 컬럼이 없을 때, 의미가 같을 수 있는 후보 컬럼이 있으면
+# 바로 막지 않고 Gemini가 고르게 한다. 고른 컬럼은 코드가 검증하고(존재·자료형·다른 용어와 중복·기존 별칭과 충돌·계산 의도),
+# 사용자는 승인 화면에서 "질문의 '고객'을 'buyer' 컬럼으로 해석했습니다"를 보고 승인하거나 취소한다.
+# 후보가 없으면(명백히 없는 정보) 지금처럼 사전 차단한다.
+# ---------------------------------------------------------------------------
+_SWITCH_ON = ("1", "true", "on", "yes")
+
+
+def column_hints_on() -> bool:
+    """환경변수 → Streamlit secrets 순서로 TI_COLUMN_HINTS를 읽는다. 없거나 알 수 없는 값이면 OFF."""
+    v = os.environ.get("TI_COLUMN_HINTS")
+    if v is None:
+        try:
+            import streamlit as st  # 배포 환경에서만 의미 있음
+
+            v = st.secrets.get("TI_COLUMN_HINTS")  # secrets 파일이 없으면 예외 → OFF
+        except Exception:  # noqa: BLE001
+            v = None
+    return v is not None and str(v).strip().lower() in _SWITCH_ON
+
+
+@dataclass
+class OpenTerm:
+    label: str  # BUSINESS_TERMS 이름 또는 'X별'의 X
+    word: str  # 질문에 나온 그대로 (승인 화면 표시용)
+    kind: str  # category / money / qty / score
+    candidates: list
+    group: bool = False  # 'X별' 묶음 기준으로 쓰였는가
+
+
+# 의미 해석을 허용하는 용어와 그 자료형. 그 밖의 용어(주문 등)는 지금처럼 이름이 맞는 컬럼만 쓴다.
+TERM_KIND = {"고객": "category", "상품·제품": "category", "지역": "category", "채널": "category",
+             "매출": "money", "금액": "money", "이익": "money", "연봉·급여": "money", "가격": "money",
+             "수량": "qty", "만족도": "score"}
+_QTY_WORDS = ("수량", "판매량", "qty", "quantity", "units", "volume", "개수", "건수", "count", "cnt", "재고", "stock")
+_MONEY_WORDS = ("금액", "액", "가격", "단가", "price", "amount", "sales", "revenue", "매출", "cost", "비용", "원가",
+                "이익", "profit", "salary", "연봉", "급여", "budget", "예산")
+_OTHER_NUM_WORDS = ("일수", "연수", "년수", "기간", "나이", "age", "시간", "hour", "day", "year", "율", "률", "rate",
+                    "ratio", "%", "점수", "score", "평점", "rating", "번호", "id", "no")
+# 이런 이름의 컬럼은 그 용어(지표)로 해석하지 않는다 (예: 연봉 → 근속연수, 매출 → 판매수량 금지)
+KIND_CONFLICTS = {"money": _QTY_WORDS + _OTHER_NUM_WORDS,
+                  "qty": _MONEY_WORDS + _OTHER_NUM_WORDS,
+                  "score": _MONEY_WORDS + _QTY_WORDS + ("일수", "연수", "나이", "age", "번호", "id")}
+# 묶음 기준(범주)으로 해석하지 않는 다른 차원의 이름 (예: 고객 → 창고·공정·등급 금지)
+_OTHER_DIMENSIONS = ("창고", "warehouse", "공정", "라인", "line", "등급", "grade", "유형", "type", "분류", "category",
+                     "상태", "status", "월", "month", "date", "일자", "날짜", "년", "year", "성별", "gender", "요일")
+
+
+# 범주 용어마다 '다른 대상'을 가리키는 이름 (예: 고객 ↔ 매장·공급업체·담당자). 이런 컬럼은 후보로 내지 않는다.
+_SELLER_SIDE = ("store", "매장", "점포", "shop", "지점", "branch", "site", "공장", "plant", "센터", "center",
+                "vendor", "supplier", "공급", "seller", "판매자", "판매처", "brand", "브랜드", "rep", "manager", "직원", "담당")
+TERM_CONFLICTS = {
+    "고객": _SELLER_SIDE,
+    "상품·제품": ("buyer", "customer", "client", "고객", "store", "매장", "점포", "vendor", "supplier", "rep", "manager"),
+    "지역": ("buyer", "customer", "client", "vendor", "supplier", "product", "item", "brand", "rep", "manager", "channel"),
+    "채널": ("buyer", "customer", "client", "vendor", "supplier", "product", "item", "brand", "region", "rep", "manager"),
+}
+# Gemini에 알려 줄 용어의 뜻 (후보가 이 뜻이 아니면 쓰지 않게)
+TERM_MEANING = {
+    "고객": "제품·서비스를 사는 쪽(구매자·고객사). 매장·지점·공급업체·브랜드·담당자는 고객이 아니다",
+    "상품·제품": "판매·생산되는 물건(품목). 고객·매장·공급업체는 상품이 아니다",
+    "지역": "지리적 위치(도시·권역). 매장·고객·상품은 지역이 아니다",
+    "채널": "판매·유입 경로(온라인·오프라인·앱 등)",
+    "매출": "판매로 번 금액", "금액": "돈 단위의 값", "이익": "매출에서 비용을 뺀 금액",
+    "연봉·급여": "직원에게 주는 보수", "가격": "한 단위의 값", "수량": "개수 단위의 양", "만족도": "만족 정도의 점수",
+}
+
+
+def _names(col: str) -> tuple:
+    return col.lower(), show(col).lower()
+
+
+def _claimed_by_other(col: str, label: str) -> bool:
+    """다른 업무 용어·필수 개념의 별칭과 맞는 컬럼인가 (예: region은 '지역' → '고객'으로 쓰지 않음)."""
+    names = _names(col)
+    for other, _rx, aliases in BUSINESS_TERMS:
+        if other != label and any(a.lower() in n for a in aliases for n in names):
+            return True
+    return any(h.lower() in n for _l, _rx, _i, hints in REQUIRED_CONCEPTS for h in hints for n in names)
+
+
+def _conflicts(col: str, words) -> bool:
+    names = _names(col)
+    return any(w.lower() in n for w in words for n in names)
+
+
+def open_candidates(label: str, vocab: Vocabulary) -> list[str]:
+    """(스위치 ON, 일반 CSV) 질문 용어와 의미가 같을 수 있는 후보 컬럼. 없으면 [] → 기존처럼 사전 차단."""
+    kind = TERM_KIND.get(label)
+    if not kind or vocab.kind == "standard" or not column_hints_on():
+        return []
+    out = []
+    for c in vocab.columns.get("main", {}):
+        role = vocab.roles.get(c)
+        if kind == "category":
+            if role != "category" or _conflicts(c, _OTHER_DIMENSIONS + TERM_CONFLICTS.get(label, ())):
+                continue
+        elif role != "number" or _conflicts(c, KIND_CONFLICTS[kind]):
+            continue
+        if _claimed_by_other(c, label):
+            continue
+        out.append(c)
+    return out
+
+
+def open_group_candidates(vocab: Vocabulary, qc: "QuestionCols") -> list[str]:
+    """(스위치 ON, 일반 CSV) 'X별'의 X와 이름이 같은 컬럼이 없을 때 묶음 기준이 될 수 있는 후보 (범주형, 다른 용도로 안 쓰인 것)."""
+    if vocab.kind == "standard" or not column_hints_on():
+        return []
+    return [c for c in vocab.columns.get("main", {})
+            if vocab.roles.get(c) == "category" and c not in qc.mention_cols
+            and not _conflicts(c, _OTHER_DIMENSIONS) and not _claimed_by_other(c, "")]
+
+
+def open_cols(qc: "QuestionCols", group: bool) -> set:
+    """의미 해석 후보 컬럼 (group=True: 묶음·범주 용어, False: 지표 용어). OFF면 항상 빈 집합."""
+    return {c for t in qc.open_terms if (t.kind == "category") == group for c in t.candidates}
+
+
+def open_term_check(tool: str, params: dict, qc: "QuestionCols", vocab: Vocabulary) -> tuple[list[str], list[str]]:
+    """계획이 의미 해석 용어를 후보 컬럼 하나에 정확히 대응시켰는지. (problems, 승인 화면 안내)"""
+    if not qc.open_terms:
+        return [], []
+    table = params.get("table", "main")
+    groups = params.get("group_by")
+    groups = groups if isinstance(groups, list) else ([groups] if groups else [])
+    gcols = {vocab.resolve(table, g) for g in groups} - {None}
+    vcols = {vocab.resolve(table, params.get(k)) for k in ("value_column", "multiply_by", "denominator_column")
+             if params.get(k)} - {None}
+    fcols = {vocab.resolve(table, f.get("column")) for f in (params.get("filters") or [])
+             if isinstance(f, dict) and f.get("column")} - {None}
+    problems, notes, taken = [], [], {}
+    for t in qc.open_terms:
+        cands = ", ".join(show(c) for c in t.candidates)
+        if t.group:
+            pool, role = gcols, "묶음 기준"
+        elif t.kind == "category":
+            pool, role = gcols | fcols, "조건"
+        else:
+            pool, role = vcols, "지표"
+        hit = sorted(c for c in pool if c in t.candidates)
+        if not hit:
+            if t.group:
+                wrong = sorted(gcols - qc.mention_cols)
+                if wrong:
+                    problems.append(f"질문의 묶음 기준({t.word}별)을 후보({cands})가 아닌 "
+                                    f"'{', '.join(show(c) for c in wrong)}'(으)로 계획했습니다")
+                else:
+                    problems.append(f"질문의 묶음 기준({t.word}별)이 계획에 없습니다 (group_by 필요, 후보: {cands})")
+            else:
+                problems.append(f"질문의 '{t.word}'에 해당하는 컬럼을 계획이 쓰지 않았습니다 (후보: {cands})")
+            continue
+        if len(hit) > 1:
+            problems.append(f"질문의 '{t.word}'을(를) 여러 컬럼({', '.join(show(c) for c in hit)})으로 해석해 확실하지 않습니다")
+            continue
+        col = hit[0]
+        if col in taken:
+            problems.append(f"'{show(col)}' 컬럼을 '{taken[col]}'와(과) '{t.word}' 두 용어에 같이 썼습니다")
+            continue
+        taken[col] = t.word
+        alt = [show(c) for c in t.candidates if c != col]
+        notes.append(f"질문의 '{t.word}'을(를) '{show(col)}' 컬럼({role})으로 해석했습니다."
+                     + (f" 다른 후보: {', '.join(alt)}." if alt else "")
+                     + " 맞지 않으면 [취소]를 누르고 질문에 컬럼 이름을 넣어 다시 물어 주세요.")
+    return problems, notes
+
+
+def open_term_hint(qc: "QuestionCols", clarify_tool: str, limit_tool: str) -> str:
+    """Gemini에 줄 해석 안내 (컬럼 이름만, 데이터 값·자유 텍스트 없음)."""
+    if not qc.open_terms:
+        return ""
+    lines = ["[컬럼 해석 안내]"]
+    for t in qc.open_terms:
+        use = "group_by" if t.group else ("value_column" if t.kind != "category" else "group_by 또는 filters")
+        meaning = f" '{t.word}'의 뜻: {TERM_MEANING[t.label]}." if t.label in TERM_MEANING else ""
+        lines.append(f"- 질문의 '{t.word}'과(와) 이름이 같은 컬럼은 없다.{meaning} 이름이 다른 후보: "
+                     f"{', '.join(show(c) for c in t.candidates)}. 후보가 질문의 용어와 같은 대상을 가리킬 때만 그 컬럼 하나를 "
+                     f"{use}에 써라. 후보가 다른 대상(예: 고객 대신 매장)을 가리키면 쓰지 마라.")
+    lines.append(f"- 질문의 대상을 가리키는 컬럼이 후보에 없으면 {limit_tool}를 호출하라. "
+                 f"후보가 여럿인데 어느 것인지 이름만으로 확실하지 않으면 {clarify_tool}를 호출하라. "
+                 "후보가 아닌 컬럼이나 다른 계산으로 대신하지 마라.")
+    return "\n".join(lines)
 
 
 def generic_unsupported(question: str, vocab: Vocabulary, qc: QuestionCols) -> list[str]:
@@ -500,7 +700,7 @@ def generic_mismatch(tool: str, params: dict, qc: QuestionCols, vocab: Vocabular
         if col and vocab.roles.get(col) == "text":
             problems.append(f"'{show(col)}'은(는) 자유 텍스트 컬럼이라 묶음 기준으로 쓰지 않습니다")
             continue
-        if col and col not in qc.mention_cols:
+        if col and col not in qc.mention_cols and col not in open_cols(qc, group=True):
             want = ", ".join(show(c) for c in sorted(qc.group_cols)) or "(질문에 집계 기준 없음)"
             problems.append(f"집계 기준 '{show(col)}'은(는) 질문에서 요구하지 않았습니다 (요청 기준: {want})")
     if tool in ("aggregate", "calculate_ratio") and qc.group_cols:  # 질문의 'X별'이 계획에서 빠지면 전체 값만 나옴
@@ -511,7 +711,7 @@ def generic_mismatch(tool: str, params: dict, qc: QuestionCols, vocab: Vocabular
     value = params.get("value_column")
     if value and qc.metric_cols:
         col = vocab.resolve(table, value)
-        if col and col not in qc.metric_cols:
+        if col and col not in qc.metric_cols and col not in open_cols(qc, group=False):
             problems.append(f"지표 '{show(col)}'은(는) 질문의 지표({', '.join(show(c) for c in sorted(qc.metric_cols))})와 다릅니다")
     return problems
 
