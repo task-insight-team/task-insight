@@ -175,6 +175,25 @@ def mh_note(rows: list[dict]):
             f"{num_label(top['실적MH'] - top['계획MH'])}MH**(실적−계획)와는 서로 다른 값입니다 (덜 쓴 업무가 있으면 순증가가 더 작습니다).")
 
 
+def kpi_visual(tool: str, r, df: pd.DataFrame, key: str) -> bool:
+    """표로만 나오던 두 결과(기한 초과 업무 목록, 빠진 정보)에 숫자 카드와 막대차트를 더한다.
+    값은 모두 같은 ToolResult(rows, value)에서 가져온다. 그릴 수 없으면 False를 돌려줘 표만 보여 준다."""
+    if df.empty:
+        return False
+    if tool == "count_overdue_tasks" and {"업무ID", "초과 일수"} <= set(df.columns):
+        total = r.value if r.value is not None else len(df)
+        st.metric("기한이 지난 미완료 업무", f"{num_label(total)} {r.unit}")
+        draw_bar(df, "업무ID", "초과 일수", "업무별 기한 초과 일수 — 초과 일수(일)", key)
+        return True
+    if tool == "check_missing_data" and {"업무ID", "컬럼"} <= set(df.columns):
+        total = r.value if r.value is not None else df["업무ID"].nunique()
+        st.metric("확인이 필요한 업무", f"{num_label(total)} {r.unit}")
+        by = df.groupby("컬럼", sort=False).size().rename("건수").reset_index()
+        draw_bar(by, "컬럼", "건수", "빈칸 종류별 건수 — 건수(건)", key)
+        return True
+    return False
+
+
 def md(text: str) -> str:
     return text.replace("\n", "  \n")  # st.markdown이 줄바꿈을 살리도록
 
@@ -233,6 +252,7 @@ if out is not None:
             st.error(r.error)  # 오류면 숫자를 보여 주지 않는다
             continue
         df = pd.DataFrame(r.rows)
+        kpi_visual(s.tool, r, df, key=f"kpi_{s.step_id}")  # 표로만 나오던 결과는 숫자 카드·막대를 먼저
         show_table(df)  # 표
         y = MAIN_VALUE.get(s.tool) or (df.columns[-1] if s.tool == "aggregate" and len(df.columns) else None)
         if s.chart_type == "bar" and y in df.columns:
