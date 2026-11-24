@@ -33,7 +33,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent import approve_plan, create_plan, execute_plan  # noqa: E402
-from agent.llm import GeminiClient  # noqa: E402
+from agent.llm import GeminiClient, LLMError  # noqa: E402
 from contracts import ToolResult  # noqa: E402
 from engine import load_dataset  # noqa: E402
 
@@ -55,6 +55,14 @@ SETS = ("core", "paraphrase", "refuse", "demo")  # --set all = 이 묶음들 (�
 EXTRA_SETS = ("general", "holdout")  # all에 넣지 않고 따로 돌리는 묶음 (Gemini 호출 절약)
 # 다른 업종 데이터 묶음: (질문 파일, 정답·종류 파일). 종류(answer·limit·refuse)별로 채점한다
 FILE_SETS = {"general": (GENERAL_QUESTIONS, GENERAL_EXPECTED), "holdout": (HOLDOUT_QUESTIONS, HOLDOUT_EXPECTED)}
+
+# Gemini 한도 초과(429): 에이전트 실력과 무관하므로 오답으로 세지 않는다.
+# 그 질문만 기다렸다가 다시 돌리고, 그래도 안 되면 '측정 못 함'으로 정답률 분모에서 뺀다.
+QUOTA = "quota"  # Run.status: 재시도 후에도 한도 초과
+UNMEASURED = "측정 못 함"  # 결과 종류(outcome)
+QUOTA_WAIT_S = 45.0  # 분당 한도가 풀릴 때까지 기다리는 시간
+QUOTA_RETRIES = 2  # 한도 초과 질문을 다시 돌리는 최대 횟수
+QUOTA_STOP_AFTER = 3  # 연속 이만큼의 질문이 끝까지 한도 초과면 일일 한도로 보고 나머지는 실행하지 않는다
 
 KAFE_AS_OF = "2026-11-19"
 SAMPLE_AS_OF = "2026-02-28"  # sample.csv 마지막 달. '전월 대비'의 기준 달이 2026-02가 되게 한다
@@ -89,6 +97,7 @@ class Run:
     stage: str = "plan"  # plan: 계획 단계에서 멈춤 / exec: 승인 후 실행까지 감
     llm_calls: int = 0  # 에이전트가 LLM에 요청한 횟수 (재계획 포함, SDK 내부 재시도 제외)
     model: str = ""
+    retries: int = 0  # 한도 초과로 이 질문을 다시 돌린 횟수 (시간·호출 수는 마지막 실행 기준)
 
 
 def load_questions(sets: tuple = ("core",)) -> list[Question]:
@@ -113,6 +122,7 @@ class _Counting:
 
     def __init__(self, make: Callable[[], Any]):
         self._make, self._inner, self.calls = make, None, 0
+        self.errors: list[str] = []  # 호출 중 난 LLMError 종류. 에이전트가 삼킨 오류(재계획 실패 등)도 여기 남는다
 
     @property
     def model(self) -> str:
@@ -120,9 +130,13 @@ class _Counting:
 
     def generate(self, system: str, user: str, tools: list[dict]):
         self.calls += 1
-        if self._inner is None:
-            self._inner = self._make()
-        return self._inner.generate(system, user, tools)
+        try:
+            if self._inner is None:
+                self._inner = self._make()
+            return self._inner.generate(system, user, tools)
+        except LLMError as exc:
+            self.errors.append(exc.kind)
+            raise
 
 
 def load_datasets() -> dict:
@@ -133,26 +147,55 @@ def load_datasets() -> dict:
     return {"kafe": kafe.dataset, "sample": sample.dataset, **{k: g.dataset for k, g in general.items()}}
 
 
+def _run_once(q: Question, ds: Any, llm_factory: Optional[Callable[[Question], Any]]) -> tuple[Run, bool]:
+    """질문 1개를 한 번 실행한다. (결과, 도중에 한도 초과가 있었는지)."""
+    start = time.perf_counter()
+    llm = _Counting((lambda q=q: llm_factory(q)) if llm_factory else GeminiClient)
+    plan = create_plan(q.text, ds, q.as_of, llm)
+    meta = {"set": q.set, "same_as": q.same_as, "llm_calls": llm.calls, "model": llm.model}
+    if plan.status != "plan":
+        run = Run(q.id, q.text, plan.status, plan.message, seconds=time.perf_counter() - start, **meta)
+    else:
+        out = execute_plan(ds, plan.plan, approve_plan(plan.plan))
+        run = Run(q.id, q.text, out.status, out.message,
+                  calls=[{"tool": s.tool, "params": s.result.params} for s in out.steps],
+                  results=[s.result for s in out.steps], seconds=time.perf_counter() - start,
+                  stage="exec", **meta)
+    return run, "quota" in llm.errors
+
+
 def run_questions(questions: list[Question], datasets: dict, llm_factory: Optional[Callable[[Question], Any]] = None,
-                  delay: float = 0.0, progress: Optional[Callable[[int, int, "Run"], None]] = None) -> list[Run]:
-    """질문마다 create_plan → approve_plan → execute_plan. llm_factory는 테스트용 (기본: Gemini)."""
-    runs = []
+                  delay: float = 0.0, progress: Optional[Callable[[int, int, "Run"], None]] = None,
+                  quota_wait: float = QUOTA_WAIT_S, quota_retries: int = QUOTA_RETRIES,
+                  quota_stop_after: int = QUOTA_STOP_AFTER, sleep: Callable[[float], None] = time.sleep) -> list[Run]:
+    """질문마다 create_plan → approve_plan → execute_plan. llm_factory는 테스트용 (기본: Gemini).
+
+    한도 초과(429)가 한 번이라도 난 질문은 결과를 버리고 quota_wait초 뒤 처음부터 다시 돌린다 (최대 quota_retries번).
+    에이전트가 오류를 삼켜 다른 결과를 냈어도(재계획 호출 실패 등) 다시 돌린다. 그래도 안 되면 status=quota(측정 못 함).
+    연속 quota_stop_after개 질문이 측정 못 함이면 일일 한도로 보고 남은 질문은 실행하지 않는다.
+    """
+    runs: list[Run] = []
+    streak = 0
     for i, q in enumerate(questions):
-        if i and delay:
-            time.sleep(delay)  # 무료 등급 분당 호출 한도
-        start = time.perf_counter()
-        ds = datasets[q.dataset]
-        llm = _Counting((lambda q=q: llm_factory(q)) if llm_factory else GeminiClient)
-        plan = create_plan(q.text, ds, q.as_of, llm)
-        meta = {"set": q.set, "same_as": q.same_as, "llm_calls": llm.calls, "model": llm.model}
-        if plan.status != "plan":
-            runs.append(Run(q.id, q.text, plan.status, plan.message, seconds=time.perf_counter() - start, **meta))
+        if streak >= quota_stop_after:
+            run = Run(q.id, q.text, QUOTA, f"앞의 {streak}개 질문이 연속으로 한도 초과라 실행하지 않았습니다 (일일 한도 가능성)",
+                      set=q.set, same_as=q.same_as)
         else:
-            out = execute_plan(ds, plan.plan, approve_plan(plan.plan))
-            runs.append(Run(q.id, q.text, out.status, out.message,
-                            calls=[{"tool": s.tool, "params": s.result.params} for s in out.steps],
-                            results=[s.result for s in out.steps], seconds=time.perf_counter() - start,
-                            stage="exec", **meta))
+            if i and delay:
+                sleep(delay)  # 무료 등급 분당 호출 한도
+            run, hit = _run_once(q, datasets[q.dataset], llm_factory)
+            tries = 0
+            while hit and tries < quota_retries:
+                tries += 1
+                sleep(quota_wait)
+                run, hit = _run_once(q, datasets[q.dataset], llm_factory)
+            run.retries = tries
+            if hit:  # 한도 초과 중에 나온 결과는 믿을 수 없어 버린다
+                run = Run(q.id, q.text, QUOTA, f"Gemini 사용 한도 초과로 측정하지 못했습니다 (다시 시도 {tries}회)",
+                          set=q.set, same_as=q.same_as, llm_calls=run.llm_calls, model=run.model,
+                          seconds=run.seconds, retries=tries)
+            streak = streak + 1 if hit else 0
+        runs.append(run)
         if progress:
             progress(i + 1, len(questions), runs[-1])
     return runs
@@ -161,7 +204,8 @@ def run_questions(questions: list[Question], datasets: dict, llm_factory: Option
 def _print_progress(n: int, total: int, run: Run) -> None:
     """실행 중 진행 표시 (정답과 무관한 정보만: 순번·상태·도구·시간)."""
     tools = ", ".join(c["tool"] for c in run.calls) or "-"
-    print(f"  [{n}/{total}] {run.id:<6} {run.status:<11} {tools} ({run.seconds:.1f}s)", flush=True)
+    again = f", 한도 초과로 다시 시도 {run.retries}회" if run.retries else ""
+    print(f"  [{n}/{total}] {run.id:<6} {run.status:<11} {tools} ({run.seconds:.1f}s{again})", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +317,9 @@ def grade(runs: list[Run]) -> list[dict]:
         rules = specs.get(run.same_as or run.id, [])
         kind = kinds.get(run.id) if run.set in FILE_SETS else None
         shown_ok = any(r.ok for r in run.results)
-        if kind == "limit" and not shown_ok:
+        if run.status == QUOTA:  # 에이전트 실력과 무관: 정답도 오답도 아니다 (정답률 분모에서 뺀다)
+            ok, reasons = False, [run.message]
+        elif kind == "limit" and not shown_ok:
             # 한계 질문: 숫자 없이 정직하게 거절하면 통과 (API 오류는 오답)
             ok = not (run.stage == "plan" and run.status == "error")
             reasons = [f"정직한 거절 ({run.status}): {run.message}" if ok else f"오류 ({run.status}): {run.message}"]
@@ -297,13 +343,16 @@ def grade(runs: list[Run]) -> list[dict]:
         report.append({"id": run.id, "set": run.set, "kind": kind, "question": run.question, "pass": ok,
                        "outcome": _outcome(run, ok, kind), "status": run.status, "calls": run.calls,
                        "reason": "; ".join(reasons), "seconds": round(run.seconds, 1),
-                       "llm_calls": run.llm_calls, "model": run.model})
+                       "llm_calls": run.llm_calls, "model": run.model,
+                       "measured": run.status != QUOTA, "retries": run.retries})
     return report
 
 
 def _outcome(run: Run, ok: bool, kind: Optional[str]) -> str:
     """결과 종류: 정답 / 정직한 거절 / 오답 / 대체 분석 / 답하지 못함 / 오류 (범용성 측정 분류용)."""
     shown = any(r.ok for r in run.results)
+    if run.status == QUOTA:
+        return UNMEASURED
     if run.stage == "plan" and run.status == "error":
         return "오류"
     if ok:
@@ -311,6 +360,18 @@ def _outcome(run: Run, ok: bool, kind: Optional[str]) -> str:
     if shown:
         return "대체 분석" if (run.set == "refuse" or kind == "refuse") else "오답"
     return "답하지 못함"
+
+
+def mark(r: dict) -> str:
+    """O 정답 / X 오답 / - 측정 못 함."""
+    return "O" if r["pass"] else ("X" if r.get("measured", True) else "-")
+
+
+def score_text(part: list[dict]) -> str:
+    """'정답 수/측정한 질문 수'. 한도 초과로 측정 못 한 질문은 분모에서 빼고 따로 적는다."""
+    measured = [r for r in part if r.get("measured", True)]
+    skipped = len(part) - len(measured)
+    return f"{sum(r['pass'] for r in measured)}/{len(measured)}" + (f" (측정 못 함 {skipped})" if skipped else "")
 
 
 def summary_md(report: list[dict]) -> str:
@@ -322,26 +383,29 @@ def summary_md(report: list[dict]) -> str:
             continue
         sec = [r["seconds"] for r in part]
         calls = [r["llm_calls"] for r in part]
-        lines.append(f"| {s} | {sum(r['pass'] for r in part)}/{len(part)} | {sum(sec) / len(sec):.1f}초 / {max(sec):.1f}초 "
+        lines.append(f"| {s} | {score_text(part)} | {sum(sec) / len(sec):.1f}초 / {max(sec):.1f}초 "
                      f"| {sum(calls)}회 / {max(calls)}회 |")
     models = sorted({r["model"] for r in report if r["model"]})
     lines += ["", f"모델: {', '.join(models) or '-'} · 시간은 질문 1개의 계획(LLM)+실행(엔진) 전체"]
+    if any(not r.get("measured", True) for r in report):
+        lines.append(f"'{UNMEASURED}' = Gemini 사용 한도 초과로 다시 시도해도 실행하지 못한 질문 (정답률 분모에서 제외)")
     for name in FILE_SETS:  # 범용성 측정: 종류(answer·limit·refuse)별 결과 분류
         part_set = [r for r in report if r["set"] == name]
         if not part_set:
             continue
         lines += ["", f"범용성 측정 ({name}): 질문 종류별 결과", "",
-                  "| 종류 | 질문 수 | 정답 | 정직한 거절 | 오답 | 대체 분석 | 답하지 못함 | 오류 |", "|---|---|---|---|---|---|---|---|"]
+                  "| 종류 | 질문 수 | 정답 | 정직한 거절 | 오답 | 대체 분석 | 답하지 못함 | 오류 | 측정 못 함 |",
+                  "|---|---|---|---|---|---|---|---|---|"]
         for k in ("answer", "limit", "refuse"):
             part = [r for r in part_set if r["kind"] == k]
             if part:
-                cnt = {o: sum(r["outcome"] == o for r in part) for o in ("정답", "정직한 거절", "오답", "대체 분석", "답하지 못함", "오류")}
+                cnt = {o: sum(r["outcome"] == o for r in part) for o in ("정답", "정직한 거절", "오답", "대체 분석", "답하지 못함", "오류", UNMEASURED)}
                 lines.append(f"| {k} | {len(part)} | " + " | ".join(str(v) for v in cnt.values()) + " |")
     lines += ["", "| ID | 질문 | 결과 | 분류 | 도구 | 판정 |", "|---|---|---|---|---|---|"]
     for r in report:
         tools = ", ".join(c["tool"] for c in r["calls"]) or "-"
         reason = r["reason"].replace("|", "/").replace("\n", " ")[:80]
-        lines.append(f"| {r['id']} | {r['question']} | {'O' if r['pass'] else 'X'} | {r['outcome']} | {tools} | {reason} |")
+        lines.append(f"| {r['id']} | {r['question']} | {mark(r)} | {r['outcome']} | {tools} | {reason} |")
     return "\n".join(lines) + "\n"
 
 
@@ -354,36 +418,39 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--set", default="core", choices=[*SETS, *EXTRA_SETS, "all"],
                     help="질문 묶음 (기본 core = 발표용 점수, all = core·paraphrase·refuse·demo, general·holdout은 따로)")
     ap.add_argument("--md", help="측정 표(정확도·시간·호출 수)를 마크다운으로 저장할 경로")
+    ap.add_argument("--quota-wait", type=float, default=QUOTA_WAIT_S, help="한도 초과 질문을 다시 돌리기 전 대기 초")
+    ap.add_argument("--quota-retries", type=int, default=QUOTA_RETRIES, help="한도 초과 질문을 다시 돌리는 최대 횟수")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
 
     sets = SETS if args.set == "all" else (args.set,)
     questions = [q for q in load_questions(sets) if not args.only or q.id in args.only]
     print(f"질문 {len(questions)}개 실행 중 (질문 사이 {args.delay:g}초 대기, 끝난 뒤 한꺼번에 채점)...", flush=True)
-    runs = run_questions(questions, load_datasets(), delay=args.delay, progress=_print_progress)  # 1단계: 정답 모름
+    runs = run_questions(questions, load_datasets(), delay=args.delay, progress=_print_progress,  # 1단계: 정답 모름
+                         quota_wait=args.quota_wait, quota_retries=args.quota_retries)
     print()
     report = grade(runs)  # 2단계: 정답 비교
 
     for r in report:
         tools = ", ".join(c["tool"] for c in r["calls"]) or "-"
-        print(f"{'O' if r['pass'] else 'X'} {r['id']:<3} {r['question']}\n    도구: {tools} | {r['reason']} ({r['seconds']}s)")
+        print(f"{mark(r)} {r['id']:<3} {r['question']}\n    도구: {tools} | {r['reason']} ({r['seconds']}s)")
     passed = sum(r["pass"] for r in report)
     print()
     for s in sets:
         part = [r for r in report if r["set"] == s]
         if part:
-            print(f"{s}: 정답 {sum(r['pass'] for r in part)}/{len(part)}")
+            print(f"{s}: 정답 {score_text(part)}")
             if s in FILE_SETS:
                 counts = {}
                 for r in part:
                     counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
                 print("  분류: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
-    print(f"전체: 정답 {passed}/{len(report)} · LLM 호출 {sum(r['llm_calls'] for r in report)}회")
+    print(f"전체: 정답 {score_text(report)} · LLM 호출 {sum(r['llm_calls'] for r in report)}회")
     if args.out:
         Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.md:
         Path(args.md).write_text(summary_md(report), encoding="utf-8")
-    return 0 if passed == len(report) else 1
+    return 0 if passed == len(report) else 1  # 측정 못 한 질문이 있어도 1 (전부 맞았다고 볼 수 없음)
 
 
 if __name__ == "__main__":
