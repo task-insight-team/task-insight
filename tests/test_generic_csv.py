@@ -122,3 +122,123 @@ def test_max_min_on_kafe(kafe):
     r = run_tool(kafe, "aggregate", {"op": "max", "value_column": "실적MH", "group_by": ["프로젝트ID"]})
     expect = pd.to_numeric(kafe.main.loc[~kafe.main["_invalid"], "actual_mh"]).groupby(kafe.main["project_id"]).max()
     assert r.ok and {x["프로젝트ID"]: x["최댓값(실적MH)"] for x in r.rows} == expect.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# 월별 묶음 (aggregate period = "month")
+# ---------------------------------------------------------------------------
+DAILY = "date,region,amount\n2026-01-05,A,100\n2026/01/20,B,200\n2026-02-03,A,400\n"
+
+
+def test_period_month_groups_daily_dates():
+    ds = load(DAILY).dataset
+    r = run_tool(ds, "aggregate", {"op": "sum", "value_column": "amount", "group_by": ["date"], "period": "month"})
+    assert r.ok and r.rows == [{"date(월)": "2026-01", "합계(amount)": 300.0}, {"date(월)": "2026-02", "합계(amount)": 400.0}]
+    assert "date(월)별" in r.basis and r.value == 700
+    r = run_tool(ds, "aggregate", {"op": "count", "group_by": ["region", "date"], "period": "month"})
+    assert {(x["region"], x["date(월)"]): x["개수(건)"] for x in r.rows} == {
+        ("A", "2026-01"): 1, ("A", "2026-02"): 1, ("B", "2026-01"): 1}
+
+
+def test_period_month_needs_date_group():
+    r = run_tool(load(DAILY).dataset, "aggregate",
+                 {"op": "sum", "value_column": "amount", "group_by": ["region"], "period": "month"})
+    assert not r.ok and "날짜 컬럼" in r.error
+
+
+def test_period_month_does_not_change_source(kafe):
+    before = kafe.main["completed_at"].copy()
+    r = run_tool(kafe, "aggregate", {"op": "count", "group_by": ["완료일"], "period": "month"})
+    import pandas as pd
+    done = pd.to_datetime(kafe.main.loc[~kafe.main["_invalid"], "completed_at"]).dropna()
+    assert r.ok and {x["완료일(월)"]: x["개수(건)"] for x in r.rows} == done.dt.strftime("%Y-%m").value_counts().to_dict()
+    assert kafe.main["completed_at"].equals(before)
+
+
+def test_without_period_output_is_unchanged():
+    """period를 주지 않으면 기존 결과와 같다 (날짜별 그대로)."""
+    r = run_tool(load(DAILY).dataset, "aggregate", {"op": "sum", "value_column": "amount", "group_by": ["date"]})
+    assert [x["date"] for x in r.rows] == ["2026-01-05", "2026-01-20", "2026-02-03"]
+
+
+# ---------------------------------------------------------------------------
+# 비율 도구 (calculate_ratio)
+# ---------------------------------------------------------------------------
+PROD = ("date,line,prod,bad,status\n2026-01-05,A,100,5,완료\n2026-01-20,B,200,2,진행\n"
+        "2026-02-03,A,300,9,완료\n2026-02-10,C,0,0,완료\n")
+
+
+def ratio(params):
+    return run_tool(load(PROD).dataset, "calculate_ratio", params)
+
+
+def test_share_by_sum_and_by_count():
+    r = ratio({"kind": "share", "value_column": "prod", "group_by": ["line"]})
+    assert r.ok and r.unit == "%" and r.value is None
+    assert [(x["line"], x["비중(%)"]) for x in r.rows] == [("A", 66.67), ("B", 33.33), ("C", 0.0)]  # 큰 순
+    r = ratio({"kind": "share", "group_by": ["line"]})
+    assert {x["line"]: x["비중(%)"] for x in r.rows} == {"A": 50.0, "B": 25.0, "C": 25.0}
+    assert "group_by" in ratio({"kind": "share"}).error
+
+
+def test_column_ratio_and_zero_denominator_group():
+    r = ratio({"kind": "column_ratio", "value_column": "bad", "denominator_column": "prod"})
+    assert r.ok and r.value == 2.67 and r.rows[0]["비율(%)"] == 2.67
+    r = ratio({"kind": "column_ratio", "value_column": "bad", "denominator_column": "prod", "group_by": ["line"]})
+    assert {x["line"]: x["비율(%)"] for x in r.rows} == {"A": 3.5, "B": 1.0, "C": None}
+    assert "분모가 0인 그룹" in r.basis
+    zero = ratio({"kind": "column_ratio", "value_column": "bad", "denominator_column": "prod",
+                  "filters": [{"column": "line", "op": "==", "value": "C"}]})
+    assert not zero.ok and "분모 합계가 0" in zero.error
+    assert "숫자 컬럼이 아니" in ratio({"kind": "column_ratio", "value_column": "line",
+                                       "denominator_column": "prod"}).error
+
+
+def test_condition_rate_monthly():
+    cond = [{"column": "status", "op": "==", "value": "완료"}]
+    r = ratio({"kind": "condition_rate", "condition": cond})
+    assert r.ok and r.value == 75.0 and r.rows[0]["해당(건)"] == 3 and r.rows[0]["전체(건)"] == 4
+    r = ratio({"kind": "condition_rate", "condition": cond, "group_by": ["date"], "period": "month"})
+    assert {x["date(월)"]: x["비율(%)"] for x in r.rows} == {"2026-01": 50.0, "2026-02": 100.0}
+    assert "condition" in ratio({"kind": "condition_rate"}).error
+
+
+def test_condition_rate_unknown_value_and_zero_rows():
+    bad = ratio({"kind": "condition_rate", "condition": [{"column": "status", "op": "==", "value": "없음"}]})
+    assert not bad.ok and "값이 없습니다" in bad.error
+    empty = ratio({"kind": "condition_rate", "condition": [{"column": "status", "op": "==", "value": "완료"}],
+                   "filters": [{"column": "prod", "op": ">", "value": "10000"}]})
+    assert not empty.ok and "0건이라" in empty.error
+
+
+def test_condition_rate_matches_completion_rate_on_kafe(kafe):
+    """업무 데이터에서 '상태=완료' 조건 비율은 완료율 도구와 같다."""
+    a = run_tool(kafe, "calculate_ratio", {"kind": "condition_rate", "group_by": ["부서"],
+                                           "condition": [{"column": "상태", "op": "==", "value": "완료"}]})
+    b = run_tool(kafe, "calculate_completion_rate", {"group_by": "부서"})
+    assert a.ok and b.ok and a.value == b.value
+    assert {x["부서"]: x["비율(%)"] for x in a.rows} == {x["부서"]: x["완료율(%)"] for x in b.rows}
+
+
+# ---------------------------------------------------------------------------
+# 컬럼끼리 비교 필터 (Filter.compare_column)
+# ---------------------------------------------------------------------------
+STOCK = "품목,수량,안전재고,창고\nA,100,200,평택\nB,500,300,평택\nC,50,,김해\nD,80,80,김해\n"
+
+
+def test_compare_column_filter():
+    ds = load(STOCK).dataset
+    r = run_tool(ds, "aggregate", {"op": "count", "filters": [
+        {"column": "수량", "op": "<", "compare_column": "안전재고"}]})
+    assert r.ok and r.value == 1 and "수량 < 안전재고" in r.basis  # C는 안전재고 빈칸이라 비교하지 않음
+    r = run_tool(ds, "aggregate", {"op": "count", "filters": [
+        {"column": "수량", "op": "<=", "compare_column": "안전재고"}], "group_by": ["창고"]})
+    assert {x["창고"]: x["개수(건)"] for x in r.rows} == {"김해": 1, "평택": 1}
+
+
+def test_compare_column_errors():
+    ds = load(STOCK).dataset
+    assert "형식이 달라" in run_tool(ds, "aggregate", {"op": "count", "filters": [
+        {"column": "수량", "op": "<", "compare_column": "창고"}]}).error
+    assert "없" in run_tool(ds, "aggregate", {"op": "count", "filters": [
+        {"column": "수량", "op": "<", "compare_column": "없는컬럼"}]}).error

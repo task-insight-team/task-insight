@@ -149,6 +149,7 @@ class Filter(BaseModel):
     column: str
     op: Literal["==", "!=", ">", ">=", "<", "<=", "in", "is_null", "not_null"]
     value: Any = None
+    compare_column: Optional[str] = None  # 값 대신 같은 행의 다른 컬럼과 비교 (예: 수량 < 안전재고). 주면 value는 무시
 
 
 class AggregateParams(BaseModel):
@@ -159,6 +160,26 @@ class AggregateParams(BaseModel):
     group_by: list[str] = Field(default_factory=list)
     filters: list[Filter] = Field(default_factory=list)
     sort: Literal["group", "value_desc", "value_asc"] = "group"
+    top_n: Optional[int] = Field(default=None, ge=1)
+    period: Optional[Literal["month"]] = None  # "month"면 group_by의 날짜 컬럼을 월(YYYY-MM)로 묶는다 (월별 추이)
+
+
+class RatioParams(BaseModel):
+    """비율(%) 계산. 결과는 항상 % 단위.
+
+    - share: 그룹별 비중 = 그룹 합계(또는 건수) / 전체 합계(또는 건수). group_by 필수. 예: 지역별 매출 비중
+    - column_ratio: 합계(value_column) / 합계(denominator_column). 예: 불량률 = 불량수량 / 생산수량
+    - condition_rate: condition에 맞는 행 수 / 전체 행 수. 예: 처리완료 비율, 반품 비율
+    """
+    table: Literal["main", "employees", "projects"] = "main"
+    kind: Literal["share", "column_ratio", "condition_rate"]
+    value_column: Optional[str] = None  # share: 합계 비중의 값 컬럼(생략하면 건수 비중) / column_ratio: 분자 컬럼
+    denominator_column: Optional[str] = None  # column_ratio의 분모 컬럼
+    condition: list[Filter] = Field(default_factory=list)  # condition_rate의 분자 조건
+    group_by: list[str] = Field(default_factory=list)
+    filters: list[Filter] = Field(default_factory=list)  # 분자·분모 모두에 먼저 적용하는 범위 조건
+    period: Optional[Literal["month"]] = None  # "month"면 group_by의 날짜 컬럼을 월(YYYY-MM)로 묶는다
+    sort: Optional[Literal["group", "value_desc", "value_asc"]] = None  # 생략: share는 큰 순, 나머지는 그룹 순
     top_n: Optional[int] = Field(default=None, ge=1)
 
 

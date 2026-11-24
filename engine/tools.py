@@ -34,6 +34,7 @@ from contracts import (
     CountOverdueParams,
     FindRecurringParams,
     MhOverrunParams,
+    RatioParams,
     SummarizeByCategoryParams,
     ToolResult,
 )
@@ -184,6 +185,85 @@ def _standard(ds: Dataset) -> bool:
     return ds.kind == "standard"
 
 
+def _apply_filters(tool: str, p: Any, df: pd.DataFrame, data: pd.DataFrame,
+                   filters: list) -> tuple[pd.DataFrame, list[str], Optional[ToolResult]]:
+    """filters를 차례로 적용한다. (적용된 데이터, 기준 설명, 오류 결과 또는 None).
+
+    없는 대상(오타·없는 부서)은 0건이 아니라 오류로 알린다. 값 확인은 형식 오류 행만 뺀 전체 표(df)로 한다.
+    """
+    desc: list[str] = []
+    for f in filters:
+        col = _resolve(data, f.column)
+        if col is None:
+            return data, desc, _missing_col(tool, p, f.column, df)
+        s = data[col]
+        other = getattr(f, "compare_column", None)
+        if f.op in ("is_null", "not_null"):
+            mask = s.isna() if f.op == "is_null" else s.notna()
+        elif other:  # 같은 행의 다른 컬럼과 비교 (예: 수량 < 안전재고)
+            if f.op == "in":
+                return data, desc, _err(tool, p, "컬럼끼리 비교에는 in을 쓸 수 없습니다.")
+            ocol = _resolve(data, other)
+            if ocol is None:
+                return data, desc, _missing_col(tool, p, other, df)
+            kinds = [("num" if pd.api.types.is_numeric_dtype(x) else
+                      "date" if pd.api.types.is_datetime64_any_dtype(x) else "text") for x in (s, data[ocol])]
+            if kinds[0] != kinds[1] or (kinds[0] == "text" and f.op not in ("==", "!=")):
+                return data, desc, _err(tool, p, f"'{f.column}'와 '{other}'는 형식이 달라 비교할 수 없습니다.")
+            o = data[ocol]
+            mask = {"==": s == o, "!=": s != o, ">": s > o, ">=": s >= o, "<": s < o, "<=": s <= o}[f.op]
+            mask = mask & s.notna() & o.notna()  # 한쪽이 빈칸이면 비교하지 않는다
+            data = data.loc[mask.fillna(False).astype(bool)]
+            desc.append(f"{_show(col)} {f.op} {_show(ocol)}")
+            continue
+        else:
+            value: Any = f.value
+            if f.op == "in" and isinstance(value, str):  # Gemini는 "P01,P05"처럼 문자열로 보낸다
+                value = [v.strip() for v in value.split(",") if v.strip()]
+            elif f.op == "in" and not isinstance(value, list):
+                value = [value]
+            try:
+                conv = pd.Timestamp if pd.api.types.is_datetime64_any_dtype(s) else (
+                    float if pd.api.types.is_numeric_dtype(s) else str)
+                value = [conv(v) for v in value] if f.op == "in" else conv(value)
+            except (TypeError, ValueError):
+                return data, desc, _err(tool, p, f"필터 값 '{f.value}'의 형식이 '{f.column}' 컬럼과 맞지 않습니다.")
+            if f.op in ("==", "!=", "in"):
+                if conv is str:
+                    value = [_match_value(s, v) for v in value] if f.op == "in" else _match_value(s, value)
+                bad = _unknown_values(_base(df)[col], col, value if f.op == "in" else [value])
+                if bad:
+                    return data, desc, _err(tool, p, bad)
+            if f.op == "in":
+                mask = s.isin(value)
+            else:
+                mask = {"==": s == value, "!=": s != value, ">": s > value, ">=": s >= value,
+                        "<": s < value, "<=": s <= value}[f.op]
+        data = data.loc[mask.fillna(False).astype(bool)]
+        desc.append(f"{_show(col)} {f.op} {'' if f.value is None else f.value}".strip())
+    return data, desc, None
+
+
+def _apply_period(tool: str, p: Any, data: pd.DataFrame,
+                  groups: list[str]) -> tuple[pd.DataFrame, dict[str, str], Optional[ToolResult]]:
+    """period="month"면 group_by의 날짜 컬럼을 'YYYY-MM'으로 바꿔 월별로 묶는다.
+
+    (바꾼 데이터, 컬럼→표시 이름, 오류 결과 또는 None). 원본은 고치지 않고 복사본에서 바꾼다.
+    날짜(YYYY-MM-DD)·월(YYYY-MM) 형식이 아닌 값은 빈칸이 되어 묶음에서 빠진다.
+    """
+    shown = {g: _show(g) for g in groups}
+    period = getattr(p, "period", None)
+    if not period:
+        return data, shown, None
+    dates = [g for g in groups if pd.api.types.is_datetime64_any_dtype(data[g]) or _is_dateish(data[g])]
+    if not dates:
+        return data, shown, _err(tool, p, "월별로 묶으려면 group_by에 날짜 컬럼(YYYY-MM-DD)이 있어야 합니다.")
+    data = data.assign(**{g: _period_series(data[g]) for g in dates})
+    for g in dates:
+        shown[g] = f"{_show(g)}(월)"
+    return data, shown, None
+
+
 # ---------------------------------------------------------------------------
 # 1. aggregate: 범용 합계·평균·개수
 # ---------------------------------------------------------------------------
@@ -211,42 +291,15 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
             return bad
         groups.append(col)
 
-    desc = []
-    for f in p.filters:
-        col = _resolve(data, f.column)
-        if col is None:
-            return _missing_col(tool, p, f.column, df)
-        s = data[col]
-        if f.op in ("is_null", "not_null"):
-            mask = s.isna() if f.op == "is_null" else s.notna()
-        else:
-            value: Any = f.value
-            if f.op == "in" and isinstance(value, str):  # Gemini는 "P01,P05"처럼 문자열로 보낸다
-                value = [v.strip() for v in value.split(",") if v.strip()]
-            elif f.op == "in" and not isinstance(value, list):
-                value = [value]
-            try:
-                conv = pd.Timestamp if pd.api.types.is_datetime64_any_dtype(s) else (
-                    float if pd.api.types.is_numeric_dtype(s) else str)
-                value = [conv(v) for v in value] if f.op == "in" else conv(value)
-            except (TypeError, ValueError):
-                return _err(tool, p, f"필터 값 '{f.value}'의 형식이 '{f.column}' 컬럼과 맞지 않습니다.")
-            if f.op in ("==", "!=", "in"):  # 없는 대상(오타·없는 부서)은 0건이 아니라 오류로 알린다
-                if conv is str:
-                    value = [_match_value(s, v) for v in value] if f.op == "in" else _match_value(s, value)
-                bad = _unknown_values(_base(df)[col], col, value if f.op == "in" else [value])
-                if bad:
-                    return _err(tool, p, bad)
-            if f.op == "in":
-                mask = s.isin(value)
-            else:
-                mask = {"==": s == value, "!=": s != value, ">": s > value, ">=": s >= value,
-                        "<": s < value, "<=": s <= value}[f.op]
-        data = data.loc[mask.fillna(False).astype(bool)]
-        desc.append(f"{_show(col)} {f.op} {'' if f.value is None else f.value}".strip())
+    data, desc, bad = _apply_filters(tool, p, df, data, p.filters)
+    if bad:
+        return bad
 
     if value_col is not None:
         data = data.loc[data[value_col].notna()]
+    data, shown, bad = _apply_period(tool, p, data, groups)
+    if bad:
+        return bad
     for g in groups:
         data = data.loc[data[g].notna()]
 
@@ -264,7 +317,7 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
     if groups:
         grouped = data.groupby(groups, sort=True)
         agg = grouped.size() if p.op == "count" else getattr(grouped[value_col], p.op)()
-        rows = [{**{_show(g): (k[i] if isinstance(k, tuple) else k) for i, g in enumerate(groups)}, label: fmt(v)}
+        rows = [{**{shown[g]: (k[i] if isinstance(k, tuple) else k) for i, g in enumerate(groups)}, label: fmt(v)}
                 for k, v in agg.items()]
         if p.sort != "group":
             rows.sort(key=lambda x: (x[label] if p.sort == "value_asc" else -x[label]))  # 안정 정렬: 동점은 그룹 순
@@ -275,12 +328,137 @@ def aggregate(ds: Dataset, p: AggregateParams) -> ToolResult:
 
     basis = f"{OP_LABEL[p.op]} 기준"
     if groups:
-        basis += f", {'·'.join(_show(g) for g in groups)}별"
+        basis += f", {'·'.join(shown[g] for g in groups)}별"
     if desc:
         basis += f", 조건: {' / '.join(desc)}"
     basis += f", {len(data)}행 사용"
     return ToolResult(tool=tool, params=p.model_dump(), rows=_clean_rows(rows), value=r(total),
                       unit="건" if p.op == "count" else "", basis=basis, used_rows=len(data))
+
+
+# ---------------------------------------------------------------------------
+# 1-1. calculate_ratio: 비중·컬럼 비율·조건 비율 (%)
+# ---------------------------------------------------------------------------
+RATIO_KEY = {"share": "비중(%)", "column_ratio": "비율(%)", "condition_rate": "비율(%)"}
+
+
+def calculate_ratio(ds: Dataset, p: RatioParams) -> ToolResult:
+    tool = "calculate_ratio"
+    df = ds.table(p.table)
+    if df is None:
+        return _err(tool, p, f"'{p.table}' 표가 없습니다. 해당 파일을 함께 올려 주세요.")
+    data = _base(df)
+
+    def numeric(name: Optional[str], role: str) -> tuple[Optional[str], Optional[ToolResult]]:
+        if not name:
+            return None, _err(tool, p, f"{role} 컬럼이 필요합니다.")
+        col = _resolve(data, name)
+        if col is None:
+            return None, _missing_col(tool, p, name, df)
+        if not pd.api.types.is_numeric_dtype(data[col]):
+            return None, _err(tool, p, f"'{name}'은 숫자 컬럼이 아니라 {role}로 쓸 수 없습니다.")
+        return col, None
+
+    num_col = den_col = None
+    if p.kind == "share":
+        if not p.group_by:
+            return _err(tool, p, "비중을 구하려면 무엇별 비중인지(group_by)가 필요합니다.")
+        if p.value_column:
+            num_col, bad = numeric(p.value_column, "비중의 값")
+            if bad:
+                return bad
+    elif p.kind == "column_ratio":
+        num_col, bad = numeric(p.value_column, "비율의 분자(value_column)")
+        if bad:
+            return bad
+        den_col, bad = numeric(p.denominator_column, "비율의 분모(denominator_column)")
+        if bad:
+            return bad
+    elif not p.condition:
+        return _err(tool, p, "조건 비율을 구하려면 분자 조건(condition)이 필요합니다.")
+
+    groups = []
+    for g in p.group_by:
+        col, bad = _group_col(tool, p, data, g)
+        if bad:
+            return bad
+        groups.append(col)
+
+    data, desc, bad = _apply_filters(tool, p, df, data, p.filters)
+    if bad:
+        return bad
+    for c in (num_col, den_col):
+        if c is not None:
+            data = data.loc[data[c].notna()]
+    data, shown, bad = _apply_period(tool, p, data, groups)
+    if bad:
+        return bad
+    for g in groups:
+        data = data.loc[data[g].notna()]
+    cond = f" (조건: {' / '.join(desc)})" if desc else ""
+    if data.empty:
+        return _err(tool, p, f"조건에 맞는 데이터가 0건이라 비율을 계산할 수 없습니다{cond}.")
+
+    key = RATIO_KEY[p.kind]
+    if p.kind == "condition_rate":
+        hit, cdesc, bad = _apply_filters(tool, p, df, data, p.condition)
+        if bad:
+            return bad
+        num = pd.Series(data.index.isin(hit.index).astype(int), index=data.index)
+        den = pd.Series(1, index=data.index)
+        num_label, den_label, fmt = "해당(건)", "전체(건)", int
+        formula = f"비율 = 조건({' / '.join(cdesc)})에 맞는 행 수 ÷ 전체 행 수 × 100"
+    elif p.kind == "column_ratio":
+        num, den = data[num_col], data[den_col]
+        num_label, den_label, fmt = f"합계({_show(num_col)})", f"합계({_show(den_col)})", r
+        formula = f"비율 = 합계({_show(num_col)}) ÷ 합계({_show(den_col)}) × 100"
+    else:
+        num = data[num_col] if num_col else pd.Series(1, index=data.index)
+        den = None
+        num_label, den_label, fmt = (f"합계({_show(num_col)})", None, r) if num_col else ("개수(건)", None, int)
+        formula = f"비중 = {'·'.join(shown[g] for g in groups)}별 {num_label} ÷ 전체 {num_label} × 100"
+
+    total_num = float(num.sum())
+    total_den = float(den.sum()) if den is not None else total_num
+    if total_den == 0:
+        return _err(tool, p, f"분모 합계가 0이라 비율을 계산할 수 없습니다{cond}.")
+
+    def pct(a: float, b: float) -> Optional[float]:
+        return None if b == 0 else r(a / b * 100)
+
+    if groups:
+        gnum = num.groupby([data[g] for g in groups], sort=True).sum()
+        gden = den.groupby([data[g] for g in groups], sort=True).sum() if den is not None else None
+        rows = []
+        for k, v in gnum.items():
+            row = {shown[g]: (k[i] if isinstance(k, tuple) else k) for i, g in enumerate(groups)}
+            row[num_label] = fmt(v)
+            if gden is not None:
+                row[den_label] = fmt(gden[k])
+                row[key] = pct(float(v), float(gden[k]))
+            else:
+                row[key] = pct(float(v), total_num)
+            rows.append(row)
+        order = p.sort or ("value_desc" if p.kind == "share" else "group")
+        if order != "group":  # 계산 불가(None)는 맨 뒤
+            sign = 1 if order == "value_asc" else -1
+            rows.sort(key=lambda x: (x[key] is None, sign * (x[key] or 0)))
+        if p.top_n:
+            rows = rows[: p.top_n]
+    else:
+        rows = [{"구분": "전체", num_label: fmt(total_num), den_label: fmt(total_den), key: pct(total_num, total_den)}]
+
+    basis = formula
+    if groups:
+        basis += f", {'·'.join(shown[g] for g in groups)}별"
+    if desc:
+        basis += f", 조건: {' / '.join(desc)}"
+    if den is not None and groups and any(x[key] is None for x in rows):
+        basis += ", 분모가 0인 그룹은 계산 불가(빈칸)"
+    basis += f", {len(data)}행 사용"
+    value = None if p.kind == "share" else pct(total_num, total_den)
+    return ToolResult(tool=tool, params=p.model_dump(), rows=_clean_rows(rows), value=value,
+                      unit="%", basis=basis, used_rows=len(data))
 
 
 # ---------------------------------------------------------------------------

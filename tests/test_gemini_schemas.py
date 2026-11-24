@@ -26,7 +26,7 @@ def test_declaration_fits_gemini_schema(decl):
 def test_filter_items_are_inlined():
     agg = next(d for d in gemini_tool_declarations() if d["name"] == "aggregate")
     item = agg["parameters"]["properties"]["filters"]["items"]
-    assert set(item["properties"]) == {"column", "op", "value"}
+    assert set(item["properties"]) == {"column", "op", "value", "compare_column"}
     assert item["properties"]["value"]["type"] == "string"
 
 
