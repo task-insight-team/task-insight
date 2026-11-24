@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from agent import approve_plan, create_plan, execute_plan
-from engine import load_dataset, read_table
+from engine import Dataset, load_dataset, read_table
 
 # 차트 주 값 컬럼 (agent/FRONTEND.md 표와 같음)
 MAIN_VALUE = {
@@ -32,15 +32,36 @@ KIND_NAMES = {"tasks": "업무", "employees": "직원", "projects": "프로젝�
 SHOW_LEVEL = {"error": st.error, "warning": st.warning, "info": st.info}
 
 
-@st.cache_resource(show_spinner="파일을 검사하는 중...")
-def load_files(files: tuple, drop_duplicates: bool):
-    """files = ((파일이름, bytes), ...). 같은 파일이면 다시 검사하지 않는다. 검증·결합은 engine이 한다."""
+ROOT = Path(__file__).parent
+
+
+def code_version() -> str:
+    """엔진·에이전트 코드의 지문. 배포로 코드가 바뀌면 값이 달라져, 오래된 캐시·계획을 버리는 기준이 된다."""
+    parts = [ROOT / "contracts.py", *sorted((ROOT / "engine").glob("*.py")), *sorted((ROOT / "agent").glob("*.py"))]
+    return "|".join(f"{p.name}:{p.stat().st_mtime_ns}:{p.stat().st_size}" for p in parts if p.exists())
+
+
+# st.cache_resource는 만든 객체를 그대로 보관해서, 배포 후 모듈이 다시 로드돼도 옛 클래스의 Dataset이 남는다.
+# st.cache_data는 꺼낼 때마다 현재 코드의 클래스로 복원하고, code_ver가 바뀌면 새로 만든다.
+@st.cache_data(show_spinner="파일을 검사하는 중...", max_entries=4)
+def _load_files(files: tuple, drop_duplicates: bool, code_ver: str):
+    """files = ((파일이름, bytes), ...). 같은 파일·같은 코드면 다시 검사하지 않는다. 검증·결합은 engine이 한다."""
     res = load_dataset(dict(files), drop_duplicates=drop_duplicates)
     previews = {}  # 파일별 앞 5줄 미리보기 (읽은 그대로, 내부용 '_' 컬럼은 뺀다)
     for name, content in files:
         df, _ = read_table(content, name)
         if df is not None:
             previews[name] = df[[c for c in df.columns if not str(c).startswith("_")]].head(5)
+    return res, previews
+
+
+def load_files(files: tuple, drop_duplicates: bool):
+    """항상 '현재 코드의' Dataset을 돌려준다. 오래된 객체가 섞여 있으면 캐시를 비우고 다시 읽는다."""
+    ver = code_version()
+    res, previews = _load_files(files, drop_duplicates, ver)
+    if res.ok and not isinstance(res.dataset, Dataset):
+        _load_files.clear()
+        res, previews = _load_files(files, drop_duplicates, ver)
     return res, previews
 
 
@@ -102,7 +123,7 @@ if not load_res.ok:
     st.stop()
 ds = load_res.dataset
 
-data_key = (files, drop_dup)  # 데이터가 바뀌면 이전 계획·결과를 지운다
+data_key = (files, drop_dup, code_version())  # 데이터나 코드가 바뀌면 이전 계획·결과를 지운다 (옛 객체로 승인·실행하지 않도록)
 if st.session_state.get("data_key") != data_key:
     st.session_state["data_key"] = data_key
     st.session_state.pop("plan_resp", None)

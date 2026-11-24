@@ -264,3 +264,210 @@ def test_demo_company_wide_answer_fails(datasets):
     run = ev.Run("D4", "품질팀 기한 초과", "ok", set="demo", stage="exec",
                  calls=[{"tool": whole.tool, "params": whole.params}], results=[whole])
     assert whole.value == 15 and not ev.grade([run])[0]["pass"]
+
+
+# ---------------------------------------------------------------------------
+# 범용성 측정 묶음 (general): 다른 업종 데이터 3종
+# ---------------------------------------------------------------------------
+GEN_RIGHT = {
+    "G01": [("aggregate", {"op": "sum", "value_column": "revenue", "group_by": ["region"]})],
+    "G02": [("aggregate", {"op": "sum", "value_column": "units"})],
+    "G03": [("aggregate", {"op": "sum", "value_column": "revenue", "group_by": ["month"], "sort": "value_desc"})],
+    "G04": [("aggregate", {"op": "sum", "value_column": "revenue", "group_by": ["month"], "sort": "value_asc"})],
+    "G05": [("compare_periods", {"date_column": "month", "op": "sum", "value_column": "revenue", "current": "2026-12",
+                                 "group_by": "region"})],
+    "G06": [("aggregate", {"op": "mean", "value_column": "revenue",
+                           "filters": [{"column": "region", "op": "==", "value": "서울"}]})],
+    "G07": [("aggregate", {"op": "sum", "value_column": "revenue", "filters": [
+                {"column": "region", "op": "==", "value": "부산"}, {"column": "month", "op": "<=", "value": "2026-06"}]}),
+            ("aggregate", {"op": "sum", "value_column": "revenue", "filters": [
+                {"column": "region", "op": "==", "value": "부산"}, {"column": "month", "op": ">=", "value": "2026-07"}]})],
+    "G08": [("compare_periods", {"date_column": "month", "op": "sum", "value_column": "revenue", "current": "2026-12",
+                                 "previous": "2026-01", "group_by": "region"})],
+    "G11": [("aggregate", {"op": "sum", "value_column": "수량", "group_by": ["창고"]})],
+    "G12": [("aggregate", {"op": "mean", "value_column": "단가", "group_by": ["분류"]})],
+    "G13": [("aggregate", {"op": "sum", "value_column": "수량",
+                           "filters": [{"column": "분류", "op": "==", "value": "원자재"}]})],
+    "G17": [("aggregate", {"op": "count", "group_by": ["유형"]})],
+    "G18": [("aggregate", {"op": "mean", "value_column": "처리시간", "group_by": ["담당팀"]})],
+    "G19": [("compare_periods", {"date_column": "접수일", "op": "count", "current": "2026-11"})],
+}
+
+
+def gen_run(datasets, calls_by_id, ids):
+    qs = [q for q in ev.load_questions(("general",)) if q.id in ids]
+    runs = ev.run_questions(qs, datasets, lambda q: FakeLLM(FakeLLM.calls(*calls_by_id[q.id]),
+                                                           FakeLLM.calls(*calls_by_id[q.id])))
+    return {r["id"]: r for r in ev.grade(runs)}
+
+
+def test_general_not_in_all():
+    """--set all은 발표 전 확인용이라 호출 수가 늘지 않게 general을 넣지 않는다."""
+    assert "general" not in ev.SETS and "general" in ev.EXTRA_SETS
+    qs = ev.load_questions(("general",))
+    assert len(qs) == 21 and {q.dataset for q in qs} == {"sales2026", "inventory", "support"}
+
+
+def test_general_expected_matches_raw_csv():
+    """정답 값을 엔진이 아니라 원본 CSV(pandas)로 다시 계산해 확인. sales2026은 과제 문서 정답과도 일치."""
+    import pandas as pd
+    exp = {a["id"]: a for a in _json.loads(ev.GENERAL_EXPECTED.read_text(encoding="utf-8"))["answers"]}
+    s = pd.read_csv(ev.GENERAL_DIR / "sales_2026.csv")
+    assert s.revenue.sum() == 80910 and s.units.sum() == 733  # 과제 문서: 총 매출 80,910 / 총 주문 733
+    assert exp["G01"]["checks"][0]["equals"] == s.groupby("region").revenue.sum().to_dict()
+    month = s.groupby("month").revenue.sum()
+    assert (month.idxmax(), month.max(), month.idxmin(), month.min()) == ("2026-12", 7860, "2026-03", 5950)
+    busan = s[s.region == "부산"]
+    assert busan[busan.month <= "2026-06"].revenue.sum() == 12950 and busan[busan.month >= "2026-07"].revenue.sum() == 9030
+    assert round(s[s.region == "서울"].revenue.mean(), 2) == exp["G06"]["checks"][0]["equals"]
+    inv = pd.read_csv(ev.GENERAL_DIR / "inventory.csv")
+    assert exp["G11"]["checks"][0]["equals"] == inv.groupby("창고").수량.sum().to_dict()
+    assert exp["G12"]["checks"][0]["equals"] == inv.groupby("분류").단가.mean().round(2).to_dict()
+    assert exp["G14"]["checks"][0]["equals"] == int((inv.수량 < inv.안전재고).sum())
+    assert exp["G15"]["checks"][0]["id"] == (inv.수량 * inv.단가).groupby(inv.창고).sum().idxmax()
+    sup = pd.read_csv(ev.GENERAL_DIR / "support_tickets.csv")
+    assert exp["G17"]["checks"][0]["equals"] == sup.유형.value_counts().to_dict()
+    assert exp["G18"]["checks"][0]["equals"] == sup.groupby("담당팀").처리시간.mean().round(2).to_dict()
+    rate = (sup.처리상태 == "처리완료").groupby(sup.담당팀).mean()
+    assert exp["G20"]["checks"][0]["id"] == rate.idxmin()
+
+
+def engine_runs(datasets, calls_by_id):
+    """에이전트를 거치지 않고 엔진으로 직접 계산한 결과를 채점용 Run으로 만든다 (엔진이 답할 수 있는지 확인용)."""
+    from engine import run_tool
+    qs = {q.id: q for q in ev.load_questions(("general",))}
+    runs = []
+    for qid, calls in calls_by_id.items():
+        results = [run_tool(datasets[qs[qid].dataset], name, params) for name, params in calls]
+        runs.append(ev.Run(qid, qs[qid].text, "ok", set="general", stage="exec",
+                           calls=[{"tool": n, "params": p} for n, p in calls], results=results))
+    return {r["id"]: r for r in ev.grade(runs)}
+
+
+def test_general_engine_can_answer(datasets):
+    """answer 질문과 일부 limit 질문(G07 두 단계, G08 비교 달 지정)은 맞는 도구를 고르면 엔진이 정답을 낸다.
+
+    에이전트가 실제로 맞는 도구를 고르는지는 실제 Gemini 측정(--set general)으로 따로 본다.
+    """
+    report = engine_runs(datasets, GEN_RIGHT)
+    wrong = {k: r["reason"] for k, r in report.items() if not r["pass"]}
+    assert not wrong and all(r["outcome"] == "정답" for r in report.values())
+
+
+@pytest.mark.parametrize("qid", ["G09", "G14", "G15", "G16", "G20"])
+def test_general_limit_honest_refusal_passes(datasets, qid):
+    r = gen_run(datasets, {qid: [LIMIT]}, {qid})[qid]
+    assert r["pass"] and r["outcome"] == "정직한 거절"
+
+
+@pytest.mark.parametrize("qid, call", [
+    ("G16", ("aggregate", {"op": "sum", "value_column": "수량", "group_by": ["입고일"]})),  # 월별 대신 날짜별
+    ("G09", ("aggregate", {"op": "sum", "value_column": "revenue", "group_by": ["region"]})),  # 비중 대신 합계
+])
+def test_general_limit_wrong_numbers_fail(datasets, qid, call):
+    """한계 질문에 틀린 숫자(월별 대신 날짜별, 비중 대신 합계)를 내면 오답 (에이전트 동작과 무관하게 채점 규칙 확인)."""
+    r = engine_runs(datasets, {qid: [call]})[qid]
+    assert not r["pass"] and r["outcome"] == "오답"
+
+
+def test_general_refuse(datasets):
+    ok = gen_run(datasets, {"G10": [LIMIT]}, {"G10"})["G10"]
+    assert ok["pass"] and ok["outcome"] == "정직한 거절"
+    sub = ev.Run("G10", "고객 만족도가 가장 낮은 지역은?", "ok", set="general", stage="exec",
+                 calls=[{"tool": "aggregate", "params": {}}],
+                 results=[run_tool_sales(datasets)])
+    r = ev.grade([sub])[0]
+    assert not r["pass"] and r["outcome"] == "대체 분석"
+
+
+def run_tool_sales(datasets):
+    from engine import run_tool
+    return run_tool(datasets["sales2026"], "aggregate", {"op": "sum", "value_column": "revenue", "group_by": ["region"]})
+
+
+def test_general_summary_has_classification(datasets):
+    report = [engine_runs(datasets, {"G01": GEN_RIGHT["G01"]})["G01"], gen_run(datasets, {"G09": [LIMIT]}, {"G09"})["G09"]]
+    md = ev.summary_md(report)
+    assert "범용성 측정 (general)" in md and "| answer | 1 | 1 |" in md and "| limit | 1 | 0 | 1 |" in md
+
+
+# ---------------------------------------------------------------------------
+# 처음 보는 질문 묶음 (holdout): 에이전트를 고친 뒤 general에만 맞춘 수정이 아닌지 확인
+# ---------------------------------------------------------------------------
+HOLD_RIGHT = {
+    "H01": [("aggregate", {"op": "sum", "value_column": "units", "group_by": ["region"], "sort": "value_desc"})],
+    "H02": [("aggregate", {"op": "sum", "value_column": "revenue",
+                           "filters": [{"column": "region", "op": "==", "value": "대구"}]})],
+    "H03": [("aggregate", {"op": "sum", "value_column": "revenue", "group_by": ["region"],
+                           "filters": [{"column": "month", "op": "==", "value": "2026-10"}]})],
+    "H04": [("compare_periods", {"date_column": "month", "op": "sum", "value_column": "revenue", "current": "2026-09"})],
+    "H07": [("aggregate", {"op": "count", "group_by": ["창고"]})],
+    "H08": [("aggregate", {"op": "mean", "value_column": "수량",
+                           "filters": [{"column": "분류", "op": "==", "value": "완제품"}]})],
+    "H10": [("aggregate", {"op": "mean", "value_column": "단가",
+                           "filters": [{"column": "창고", "op": "==", "value": "평택"}]})],
+    "H11": [("aggregate", {"op": "count", "filters": [{"column": "입고일", "op": ">=", "value": "2026-11-01"},
+                                                     {"column": "입고일", "op": "<", "value": "2026-12-01"}]})],
+    "H12": [("aggregate", {"op": "count", "group_by": ["채널"]})],
+    "H13": [("aggregate", {"op": "mean", "value_column": "처리시간",
+                           "filters": [{"column": "유형", "op": "==", "value": "제품불량"}]})],
+    "H14": [("aggregate", {"op": "count", "group_by": ["처리상태"]})],
+    "H15": [("aggregate", {"op": "mean", "value_column": "처리시간", "group_by": ["유형"], "sort": "value_desc"})],
+}
+
+
+def holdout_engine_runs(datasets, calls_by_id):
+    from engine import run_tool
+    qs = {q.id: q for q in ev.load_questions(("holdout",))}
+    runs = [ev.Run(qid, qs[qid].text, "ok", set="holdout", stage="exec",
+                   calls=[{"tool": n, "params": p} for n, p in calls],
+                   results=[run_tool(datasets[qs[qid].dataset], n, p) for n, p in calls])
+            for qid, calls in calls_by_id.items()]
+    return {r["id"]: r for r in ev.grade(runs)}
+
+
+def test_holdout_is_separate_from_general():
+    assert "holdout" in ev.EXTRA_SETS and "holdout" not in ev.SETS
+    hold = ev.load_questions(("holdout",))
+    gen = {q.text for q in ev.load_questions(("general",))}
+    assert len(hold) == 17 and not ({q.text for q in hold} & gen)  # 같은 문장 없음
+
+
+def test_holdout_expected_matches_raw_csv():
+    import pandas as pd
+    exp = {a["id"]: a for a in _json.loads(ev.HOLDOUT_EXPECTED.read_text(encoding="utf-8"))["answers"]}
+    s = pd.read_csv(ev.GENERAL_DIR / "sales_2026.csv")
+    units = s.groupby("region").units.sum()
+    assert exp["H01"]["checks"][0]["id"] == units.idxmax() and exp["H01"]["checks"][0]["value"] == units.max()
+    assert exp["H03"]["checks"][0]["equals"] == s[s.month == "2026-10"].set_index("region").revenue.to_dict()
+    m = s.groupby("month").revenue.sum()
+    assert exp["H04"]["checks"][0]["equals"] == round((m["2026-09"] / m["2026-08"] - 1) * 100, 2)
+    g = s.groupby("region")[["revenue", "units"]].sum()
+    assert exp["H05"]["checks"][0]["equals"] == (g.revenue / g.units).round(2).to_dict()
+    inv = pd.read_csv(ev.GENERAL_DIR / "inventory.csv")
+    assert exp["H07"]["checks"][0]["equals"] == inv.창고.value_counts().to_dict()
+    assert exp["H09"]["checks"][0]["equals"] == inv.groupby("분류").단가.max().to_dict()
+    assert exp["H11"]["checks"][0]["equals"] == int((inv.입고일.str[:7] == "2026-11").sum())
+    sp = pd.read_csv(ev.GENERAL_DIR / "support_tickets.csv")
+    assert exp["H12"]["checks"][0]["equals"] == sp.채널.value_counts().to_dict()
+    assert exp["H14"]["checks"][0]["equals"] == sp.처리상태.value_counts().to_dict()
+    assert exp["H15"]["checks"][0]["id"] == sp.groupby("유형").처리시간.mean().idxmax()
+
+
+def test_holdout_engine_can_answer(datasets):
+    report = holdout_engine_runs(datasets, HOLD_RIGHT)
+    wrong = {k: r["reason"] for k, r in report.items() if not r["pass"]}
+    assert not wrong and len(report) == 12
+
+
+@pytest.mark.parametrize("qid", ["H05", "H09", "H17"])
+def test_holdout_limit_honest_refusal_passes(datasets, qid):
+    q = [x for x in ev.load_questions(("holdout",)) if x.id == qid]
+    r = ev.grade(ev.run_questions(q, datasets, lambda _: FakeLLM(FakeLLM.calls(LIMIT), FakeLLM.calls(LIMIT))))[0]
+    assert r["pass"] and r["outcome"] == "정직한 거절"
+
+
+def test_holdout_h09_answerable_with_max(datasets):
+    """집계 max(최댓값) 추가로 '분류별 최고 단가'(H09)는 엔진으로 정답을 낼 수 있다 (이전에는 한계 질문)."""
+    r = holdout_engine_runs(datasets, {"H09": [("aggregate", {"op": "max", "value_column": "단가", "group_by": ["분류"]})]})
+    assert r["H09"]["pass"] and r["H09"]["outcome"] == "정답"
