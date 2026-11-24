@@ -16,6 +16,12 @@ def datasets():
     return ev.load_datasets()
 
 
+@pytest.fixture
+def fake_key(monkeypatch):
+    """CLI(main)가 시작 전에 키를 확인하는 경우(#53)에도 가짜 LLM으로 돌 수 있게. 키 확인이 없으면 아무것도 안 함."""
+    monkeypatch.setattr(ev, "find_api_key", lambda: "test-key", raising=False)
+
+
 def core(ids):
     return [q for q in ev.load_questions() if q.id in ids]
 
@@ -59,7 +65,7 @@ def test_quota_round_is_not_counted(datasets):
     assert q["outcomes"] == ["정답", ev.UNMEASURED]
 
 
-def test_cli_repeat_writes_summary(datasets, monkeypatch, tmp_path):
+def test_cli_repeat_writes_summary(datasets, monkeypatch, tmp_path, fake_key):
     factory = by_round({"Q1": [FakeLLM.calls(RIGHT["Q1"]), FakeLLM.calls(WRONG_Q1)]})
     real = ev.run_questions
     monkeypatch.setattr(ev, "run_questions", lambda qs, ds, **k: real(qs, ds, factory, **{**k, "delay": 0}))
@@ -72,7 +78,7 @@ def test_cli_repeat_writes_summary(datasets, monkeypatch, tmp_path):
     assert "흔들린 질문" in md.read_text(encoding="utf-8")
 
 
-def test_repeat_one_keeps_old_output(datasets, monkeypatch, tmp_path):
+def test_repeat_one_keeps_old_output(datasets, monkeypatch, tmp_path, fake_key):
     """--repeat를 안 주면 결과 파일 형식은 지금 그대로 (질문 목록)."""
     real = ev.run_questions
     monkeypatch.setattr(ev, "run_questions",
