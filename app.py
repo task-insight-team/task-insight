@@ -32,6 +32,9 @@ st.title("Task Insight")
 KAFE_DIR = Path(__file__).parent / "data" / "kafe"
 CAFE_DIR = Path(__file__).parent / "data" / "cafe"  # 우리 카페 예시 (가상 합성 데이터, 개인정보 없음)
 CAFE_LABEL = "예시 데이터 (우리 카페)"
+EXAMPLES_DIR = Path(__file__).parent / "data" / "examples"  # 재고·영업·품질 엑셀(CSV) 예시 (가상 합성 데이터)
+BIZ_LABEL = "예시 데이터 (재고·영업·품질)"
+BIZ_FILES = {"재고관리": "inventory.csv", "영업관리": "sales.csv", "품질관리": "quality.csv"}
 KIND_NAMES = {"tasks": "업무", "employees": "직원", "projects": "프로젝트", "generic": "일반 CSV"}
 SHOW_LEVEL = {"error": st.error, "warning": st.warning, "info": st.info}
 
@@ -107,11 +110,14 @@ def show_load_report(res, previews):
 
 
 st.subheader("1. 데이터")
-source = st.radio("분석할 데이터", ["예시 데이터 (kafe)", CAFE_LABEL, "내 CSV 올리기"], horizontal=True)
+source = st.radio("분석할 데이터", ["예시 데이터 (kafe)", CAFE_LABEL, BIZ_LABEL, "내 CSV 올리기"], horizontal=True)
 if source == "예시 데이터 (kafe)":
     files = tuple((f"{n}.csv", (KAFE_DIR / f"{n}.csv").read_bytes()) for n in ("tasks", "employees", "projects"))
 elif source == CAFE_LABEL:
     files = (("cafe_sales.csv", (CAFE_DIR / "cafe_sales.csv").read_bytes()),)
+elif source == BIZ_LABEL:
+    biz = st.selectbox("예시 파일 (한 번에 하나씩 분석합니다)", list(BIZ_FILES), key="biz_pick")
+    files = ((BIZ_FILES[biz], (EXAMPLES_DIR / BIZ_FILES[biz]).read_bytes()),)
 else:
     uploads = st.file_uploader(
         "CSV 파일을 올려 주세요 (업무·직원·프로젝트 파일 각 1개, 또는 일반 CSV 1개 / 파일당 10MB 이하)",
@@ -159,6 +165,13 @@ CAFE_EXAMPLES = [  # 우리 카페 예시 (날짜·메뉴·분류·판매수량�
 ]
 
 
+BIZ_EXAMPLES = [  # (이 컬럼이 모두 있으면, 이 예시 질문)
+    ({"품목", "창고", "현재수량", "단가"}, ["창고별 재고금액은?", "품목별 현재수량 합계는?", "창고별 현재수량 합계는?"]),
+    ({"거래일", "지역", "상품", "매출액", "판매수량"}, ["지역별 매출 비중은?", "상품별 평균 판매단가는?", "월별 매출 합계는?"]),
+    ({"발생일", "공정", "불량유형", "생산수량", "불량수량"}, ["공정별 불량률은?", "불량유형별 불량수량 합계는?", "월별 불량수량 합계는?"]),
+]
+
+
 def example_questions(ds) -> list[str]:
     """데이터에 맞는 예시 질문만 돌려 준다 (맞지 않는 데이터에는 보여 주지 않는다)."""
     if ds.kind == "standard":
@@ -166,6 +179,9 @@ def example_questions(ds) -> list[str]:
     cols = set(map(str, ds.main.columns))
     if {"날짜", "메뉴", "매출액"} <= cols:
         return CAFE_EXAMPLES
+    for need, qs in BIZ_EXAMPLES:  # 재고·영업·품질 예시 파일별 질문
+        if need <= cols:
+            return qs
     return SAMPLE_EXAMPLES if {"month", "region", "sales"} <= cols else []
 
 
