@@ -14,6 +14,7 @@ from engine.loader import Dataset
 
 from agent.context import build_vocabulary, render_context, show
 from agent.guard import (MAX_STEPS, Rejected, check_question_targets, extract_conditions, generic_mismatch,
+                         generic_unsupported,
                          missing_concepts, plan_missing, question_columns,
                          visible_columns,
                          step_scope_missing, suggest_filters, validate_call)
@@ -58,8 +59,11 @@ def _purpose(tool: str, p: dict) -> str:
     return text
 
 
-def _chart(tool: str, p: dict) -> str:
+def _chart(tool: str, p: dict, roles: dict | None = None) -> str:
     grouped = bool(p.get("group_by"))
+    groups = p.get("group_by") if isinstance(p.get("group_by"), list) else [p.get("group_by")]
+    if tool == "aggregate" and roles and any(roles.get(g) in ("date_day", "date_month") for g in groups if g):
+        return "line"  # 날짜 순서 묶음 → 선그래프
     if tool in ("mh_overrun", "cost_vs_budget", "find_recurring_issues", "compare_periods"):
         return "bar"
     if tool in ("summarize_by_category", "calculate_completion_rate", "count_overdue_tasks", "aggregate"):
@@ -108,6 +112,11 @@ def create_plan(question: str, ds: Optional[Dataset], as_of: str, llm: Optional[
                             rejected=[f"필요한 정보 없음: {', '.join(qc.missing_terms)}"],
                             message=(f"현재 데이터에는 '{', '.join(qc.missing_terms)}' 정보(컬럼)가 없어 이 분석을 할 수 없습니다. "
                                      f"사용할 수 있는 컬럼: {cols_text}. 다른 분석으로 대신하지 않습니다."))
+    not_yet = generic_unsupported(question, vocab, qc)
+    if not_yet:  # 현재 엔진에 없는 연산 → 비슷한 다른 계산으로 대신하지 않고 안내 (LLM 호출 없음)
+        return PlanResponse(status="unsupported", question=question, as_of=as_of, rejected=not_yet,
+                            message=("이 질문에는 현재 분석 도구로 정확히 계산할 수 없는 부분이 있습니다: " + "; ".join(not_yet)
+                                     + f". 다른 계산으로 대신하지 않습니다. 사용할 수 있는 컬럼: {cols_text}."))
     if qc.unknown_groups:  # 'X별'의 X가 어느 컬럼인지 확실하지 않음 → 추측하지 않고 되묻기
         return PlanResponse(status="clarify", question=question, as_of=as_of,
                             rejected=[f"집계 기준 불명확: {', '.join(qc.unknown_groups)}"],
@@ -216,7 +225,7 @@ def _build(reply, vocab, conditions, qc=None) -> dict:
             continue
         notices += [n for n in notes if n not in notices]
         steps.append(PlanStep(id=f"s{len(steps) + 1}", tool=c["name"], params=params,
-                              purpose=_purpose(c["name"], params), chart_type=_chart(c["name"], params)))
+                              purpose=_purpose(c["name"], params), chart_type=_chart(c["name"], params, vocab.roles)))
     unmet = plan_missing(steps, conditions, vocab) if steps else []
     if unmet:  # 질문이 요구한 지표·범위를 계획 전체가 다루지 못하면 승인 대상으로 내보내지 않는다
         uncovered += [x for x in unmet if x not in uncovered]

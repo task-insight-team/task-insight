@@ -348,12 +348,13 @@ def missing_concepts(question: str, vocab: Vocabulary) -> list[str]:
 BUSINESS_TERMS = [
     ("고객", re.compile(r"고객|거래처"), ("customer", "client", "고객", "거래처")),
     ("상품·제품", re.compile(r"상품|제품|품목"), ("product", "item", "goods", "sku", "상품", "제품", "품목")),
-    ("매출", re.compile(r"매출|판매액|판매 금액"), ("sales", "revenue", "매출", "판매")),
+    ("매출", re.compile(r"매출|판매액|판매 금액"), ("sales", "revenue", "매출", "판매액")),
+    ("금액", re.compile(r"금액"), ("금액", "액", "amount", "sales", "revenue", "cost", "비용", "예산", "budget")),
     ("이익", re.compile(r"이익|마진|수익"), ("profit", "margin", "income", "이익", "마진", "수익")),
     ("연봉·급여", re.compile(r"연봉|급여|임금|월급|보수"), ("salary", "wage", "pay", "연봉", "급여", "임금")),
     ("만족도", re.compile(r"만족도|만족"), ("satisfaction", "만족")),
     ("주문", re.compile(r"주문"), ("order", "주문")),
-    ("수량", re.compile(r"수량|판매량"), ("qty", "quantity", "수량", "판매량")),
+    ("수량", re.compile(r"수량|판매량"), ("qty", "quantity", "units", "volume", "수량", "판매량")),
     ("가격", re.compile(r"가격|단가"), ("price", "가격", "단가")),
     ("지역", re.compile(r"지역|지점|도시"), ("region", "area", "city", "location", "branch", "지역", "지점", "도시")),
     ("채널", re.compile(r"채널"), ("channel", "채널")),
@@ -369,6 +370,11 @@ def _matching_cols(vocab: Vocabulary, aliases: tuple) -> list[str]:
     return [c for c in cols if any(a.lower() in c.lower() or a.lower() in show(c).lower() for a in aliases)]
 
 
+def _inside_value(word: str, question: str, vocab: Vocabulary) -> bool:
+    """질문에 나온 용어가 실제 범주값(질문에도 그대로 나온 값)의 일부인가. 예: 유형 = '제품불량'의 '제품'."""
+    return any(word in v and v in question for vals in vocab.values.values() for v in vals if len(v) > len(word))
+
+
 @dataclass
 class QuestionCols:
     missing_terms: list = field(default_factory=list)  # 질문 용어인데 맞는 컬럼이 없음 (예: 고객)
@@ -376,6 +382,8 @@ class QuestionCols:
     group_cols: set = field(default_factory=set)  # 질문이 요구한 집계 기준 컬럼
     mention_cols: set = field(default_factory=set)  # 질문에 나온 컬럼 (기준·지표 모두)
     metric_cols: set = field(default_factory=set)  # 질문에 나온 숫자 컬럼 (지표)
+    verbatim_numeric: set = field(default_factory=set)  # 이름이 질문에 그대로 나온 숫자 컬럼
+    month_from_daily: bool = False  # '월별'인데 일 단위 날짜 컬럼만 있음
 
 
 def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
@@ -383,11 +391,12 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
     qc = QuestionCols()
     cols = vocab.columns.get("main", {})
     for label, rx, aliases in BUSINESS_TERMS:
-        if rx.search(question):
+        m = rx.search(question)
+        if m:
             found = _matching_cols(vocab, aliases)
             if found:
                 qc.mention_cols |= set(found)
-            else:
+            elif not _inside_value(m.group(0), question, vocab):  # '제품불량'처럼 데이터 값의 일부면 컬럼 요청이 아님
                 qc.missing_terms.append(label)
     for c in cols:  # 컬럼 이름 자체가 질문에 나온 경우 (sales, 건수 등)
         if len(c) >= 2 and (c.lower() in question.lower() or (show(c) != c and show(c) in question)):
@@ -400,6 +409,9 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
             target = set()
             if word in MONTH_WORDS or word.endswith("월"):
                 target = set(_matching_cols(vocab, MONTH_HINTS)) | {c for c, t in cols.items() if t == "날짜"}
+                target |= {c for c, r in vocab.roles.items() if r in ("date_day", "date_month")}
+                if target and not any(vocab.roles.get(c) == "date_month" or "month" in c.lower() for c in target):
+                    qc.month_from_daily = True  # 월로 묶어 달라는데 일 단위 날짜만 있음 (월 묶음 도구 없음)
             else:
                 for label, rx, aliases in BUSINESS_TERMS:
                     if rx.search(word):
@@ -413,8 +425,37 @@ def question_columns(question: str, vocab: Vocabulary) -> QuestionCols:
                 qc.mention_cols |= target
             elif not any(word == t for t in qc.missing_terms):
                 qc.unknown_groups.append(word)
-    qc.metric_cols = {c for c in qc.mention_cols if cols.get(c) == "숫자"}
+    # 지표: 질문에 컬럼 이름이 그대로 나오면 그 컬럼만 (예: '불량수량 합계' → 불량수량, 생산수량은 아님)
+    verbatim = {c for c in cols if cols.get(c) == "숫자" and len(c) >= 2 and c.lower() in question.lower()}
+    qc.metric_cols = verbatim or {c for c in qc.mention_cols if cols.get(c) == "숫자"}
+    qc.verbatim_numeric = verbatim
     return qc
+
+
+# 일반 CSV에서 현재 엔진에 없는 연산 (비율·비중, 열 간 비교, 월 묶음): 다른 계산으로 대신하지 않고 미리 안내
+_RATIO_RE = re.compile(r"(비율|비중|점유율|퍼센트|백분율|%|[가-힣]+률|[가-힣]+율)")
+_RATIO_OK = ("증감률", "증감율", "변화율", "증가율", "감소율", "성장률")  # compare_periods가 계산
+_COMPARE_RE = re.compile(r"보다.{0,15}?(많|적|크|작|높|낮|부족|모자|초과|미만|넘)")  # "안전재고보다 현재수량이 적은"
+
+
+def generic_unsupported(question: str, vocab: Vocabulary, qc: QuestionCols) -> list[str]:
+    if vocab.kind == "standard":
+        return []
+    cols = vocab.columns.get("main", {})
+    reasons = []
+    for m in _RATIO_RE.finditer(question):
+        word = m.group(1)
+        if any(ok in question for ok in _RATIO_OK) and word in _RATIO_OK:
+            continue
+        if word in _RATIO_OK or any(word in c or c in word for c in cols if len(c) >= 2):
+            continue  # 증감률 또는 그 이름의 컬럼이 이미 있음
+        reasons.append(f"'{word}' 같은 비율·비중 계산 (두 값을 나누는 도구가 아직 없음)")
+        break
+    if _COMPARE_RE.search(question) and len(qc.verbatim_numeric) >= 2:
+        reasons.append("두 컬럼 값을 서로 비교하는 조건 (컬럼 간 비교 필터가 아직 없음)")
+    if qc.month_from_daily:
+        reasons.append("일 단위 날짜를 월별로 묶어 여러 달을 나열하는 집계 (월 묶음 도구가 아직 없음, 두 달 비교는 가능)")
+    return reasons
 
 
 def generic_mismatch(tool: str, params: dict, qc: QuestionCols, vocab: Vocabulary) -> list[str]:
@@ -427,6 +468,9 @@ def generic_mismatch(tool: str, params: dict, qc: QuestionCols, vocab: Vocabular
     groups = groups if isinstance(groups, list) else ([groups] if groups else [])
     for g in groups:
         col = vocab.resolve(table, g)
+        if col and vocab.roles.get(col) == "text":
+            problems.append(f"'{show(col)}'은(는) 자유 텍스트 컬럼이라 묶음 기준으로 쓰지 않습니다")
+            continue
         if col and col not in qc.mention_cols:
             want = ", ".join(show(c) for c in sorted(qc.group_cols)) or "(질문에 집계 기준 없음)"
             problems.append(f"집계 기준 '{show(col)}'은(는) 질문에서 요구하지 않았습니다 (요청 기준: {want})")

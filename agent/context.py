@@ -61,6 +61,7 @@ class Vocabulary:
     columns: dict[str, dict[str, str]] = field(default_factory=dict)  # 표 -> {내부 컬럼: 형식}
     values: dict[str, list[str]] = field(default_factory=dict)  # 내부 컬럼 -> 허용 값 (계획 검증용, LLM에 그대로 보내지 않음)
     prompt_values: dict[str, list[str]] = field(default_factory=dict)  # LLM에 보여줄 검증된 범주값 (표준 데이터만)
+    roles: dict[str, str] = field(default_factory=dict)  # 일반 CSV main 컬럼 -> 역할 (ROLE_LABEL 키)
 
     def table_of(self, table: str) -> dict[str, str]:
         return self.columns.get(table, {})
@@ -75,6 +76,43 @@ class Vocabulary:
             if cand and cand in cols:
                 return cand
         return None
+
+
+# 일반 CSV 컬럼 역할: 값의 모양(자료형·날짜 형식·고유값 비율)으로 정한다. 업종별 컬럼 이름은 쓰지 않는다.
+# 메모 이름 힌트(비고·메모·설명 등)는 어떤 업종에도 공통인 '자유 텍스트' 표시용이다.
+ROLE_LABEL = {
+    "number": "수치", "date_day": "날짜(일, YYYY-MM-DD)", "date_month": "날짜(월, YYYY-MM)",
+    "category": "범주", "id": "식별자", "text": "자유 텍스트",
+}
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+_MEMO_HINTS = ("비고", "메모", "설명", "내용", "의견", "코멘트", "memo", "note", "comment", "description", "remark")
+_ID_HINTS = ("id", "번호", "코드", "code", "no")
+MAX_CATEGORY_UNIQUE = 50
+
+
+def infer_role(name: str, s: pd.Series) -> str:
+    if pd.api.types.is_numeric_dtype(s):
+        return "number"
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return "date_day"
+    text = s.dropna().astype(str).str.strip()
+    text = text[text != ""]
+    low = name.lower()
+    if any(h in low for h in _MEMO_HINTS):
+        return "text"
+    if text.empty:
+        return "text"
+    if text.str.match(_DAY_RE).mean() >= 0.9:
+        return "date_day"
+    if text.str.match(_MONTH_RE).mean() >= 0.9:
+        return "date_month"
+    n, uniq = len(text), text.nunique()
+    if uniq == n and n >= 5 and (any(low.endswith(h) for h in _ID_HINTS) or text.str.len().max() <= 20):
+        return "id"
+    if uniq <= MAX_CATEGORY_UNIQUE and text.str.len().max() <= 30:
+        return "category"
+    return "text"
 
 
 def build_vocabulary(ds: Dataset, as_of: str) -> Vocabulary:
@@ -107,6 +145,7 @@ def build_vocabulary(ds: Dataset, as_of: str) -> Vocabulary:
             if ok:
                 vocab.prompt_values[col] = ok
     else:  # 일반 CSV: 검증용 값만 만들고 LLM에는 보내지 않는다 (고유값이 적다고 범주라고 볼 수 없음: 메모 등)
+        vocab.roles = {c: infer_role(c, ds.main[c]) for c in vocab.columns.get("main", {})}
         df = ds.main
         for col, kind in vocab.columns["main"].items():
             if kind != "텍스트":
@@ -136,7 +175,11 @@ def render_context(ds: Dataset, vocab: Vocabulary) -> str:
     for table, cols in vocab.columns.items():
         shown_cols = [(c, t) for c, t in cols.items() if safe_label(c, MAX_NAME_LEN) and safe_label(show(c), MAX_NAME_LEN)]
         hidden += len(cols) - len(shown_cols)
-        lines.append(f"- {table_label[table]}: " + ", ".join(f"{show(c)}({c}): {t}" for c, t in shown_cols))
+        if table == "main" and vocab.roles:  # 일반 CSV: 형식 대신 역할 (날짜 글자 컬럼도 날짜로 알려 준다)
+            lines.append(f"- {table_label[table]}: " + ", ".join(
+                f"{show(c)}({c}): {ROLE_LABEL[vocab.roles.get(c, 'text')]}" for c, t in shown_cols))
+        else:
+            lines.append(f"- {table_label[table]}: " + ", ".join(f"{show(c)}({c}): {t}" for c, t in shown_cols))
     if hidden:
         lines.append(f"(검증되지 않은 컬럼 이름 {hidden}개는 표시하지 않음)")
     if vocab.prompt_values:
@@ -150,4 +193,7 @@ def render_context(ds: Dataset, vocab: Vocabulary) -> str:
         if dr:
             lines += ["", f"[날짜 범위] {dr}"]
     lines += ["", "자유 텍스트 컬럼(업무명·프로젝트명)은 분석·필터·묶음 기준으로 쓸 수 없다."]
+    if vocab.roles:
+        lines += ["역할이 '자유 텍스트'인 컬럼은 묶음 기준으로 쓰지 않는다. '식별자' 컬럼은 묶음 기준이 아니라 개별 기록 구분용이다.",
+                  "날짜(일) 컬럼은 compare_periods에서 두 달 비교(YYYY-MM)에 쓸 수 있다. 월 단위로 묶어 여러 달을 나열하는 도구는 없다."]
     return "\n".join(lines)
