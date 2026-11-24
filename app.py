@@ -5,6 +5,7 @@
 * 표와 차트는 같은 ToolResult.rows로 그린다.
 """
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -194,6 +195,85 @@ def kpi_visual(tool: str, r, df: pd.DataFrame, key: str) -> bool:
     return False
 
 
+TIME_RE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")  # 2026-01 / 2026-01-05 처럼 월·날짜 순서인 첫 컬럼
+SKIP_COLS = {"원본 행", "행", "비고", "순위"}  # 그림의 값으로 쓰지 않는 컬럼
+PREFER = ("(%)", "(건)", "MH", "일수", "합계", "개수", "평균", "증감")  # 값 컬럼을 고를 때 먼저 보는 이름
+MAX_BARS = 30  # 한 그림에 그리는 최대 행 수 (표에는 전체가 있다)
+
+
+def numeric_cols(df: pd.DataFrame) -> list:
+    return [c for c in df.columns[1:] if c not in SKIP_COLS and pd.to_numeric(df[c], errors="coerce").notna().any()]
+
+
+def pick_value_column(tool: str, df: pd.DataFrame):
+    """그릴 값 컬럼: 도구별 주 컬럼 > 범용 합계 도구의 마지막 컬럼 > 이름 규칙 > 마지막 숫자 컬럼."""
+    ok = numeric_cols(df)
+    main = MAIN_VALUE.get(tool)
+    if main in ok:
+        return main
+    if tool == "aggregate" and len(df.columns) and df.columns[-1] in ok:
+        return df.columns[-1]
+    for key in PREFER:
+        for c in ok:
+            if key in str(c):
+                return c
+    return ok[-1] if ok else None
+
+
+def draw_line(df: pd.DataFrame, x: str, y: str, title: str, key: str):
+    vals = pd.to_numeric(df[y], errors="coerce")
+    cats = df[x].astype(str).tolist()
+    fig = go.Figure(go.Scatter(x=cats, y=vals, mode="lines+markers+text", text=vals.map(num_label),
+                               textposition="top center", cliponaxis=False))
+    if vals.min() < 0:
+        fig.add_hline(y=0, line_width=2, line_color="gray")  # 음수가 있으면 0 기준선
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=cats, title_text=x)
+    fig.update_yaxes(title_text=y)
+    fig.update_layout(title_text=title, showlegend=False, margin=dict(t=60, b=40, l=10, r=10))
+    st.plotly_chart(fig, width="stretch", key=key)
+
+
+def draw_pie(df: pd.DataFrame, x: str, y: str, title: str, key: str):
+    vals = pd.to_numeric(df[y], errors="coerce")
+    fig = go.Figure(go.Pie(labels=df[x].astype(str).tolist(), values=vals, sort=False, textinfo="label+value+percent"))
+    fig.update_layout(title_text=f"{title}", margin=dict(t=60, b=20, l=10, r=10))
+    st.plotly_chart(fig, width="stretch", key=key)
+
+
+def auto_visual(s, r, df: pd.DataFrame, key: str) -> bool:
+    """어떤 결과든 숫자가 있으면 그림으로 보여 준다 (한 줄=숫자 카드, 월·날짜 순서=선, 그 밖=막대, 계획이 원을 고르면 원).
+    값은 모두 같은 ToolResult(value, rows)에서 가져온다. 숫자가 없으면 False를 돌려줘 표만 보여 준다."""
+    if df.empty or len(df.columns) == 0:
+        return False
+    cols = numeric_cols(df)
+    if len(df) == 1:  # 한 줄 결과: 숫자 카드
+        if r.value is not None:
+            st.metric(s.purpose, f"{num_label(r.value)} {r.unit}")
+            return True
+        shown = cols[:4]
+        if not shown:
+            return False
+        for col, c in zip(st.columns(len(shown)), shown):
+            col.metric(str(c), num_label(pd.to_numeric(df[c].iloc[0], errors="coerce")))
+        return True
+    y = pick_value_column(s.tool, df)
+    x = df.columns[0]
+    if y is None or y == x:
+        return False
+    part = df.head(MAX_BARS)
+    title = f"{s.purpose} — {y}"
+    vals = pd.to_numeric(part[y], errors="coerce")
+    if part[x].astype(str).map(lambda v: bool(TIME_RE.match(v))).all():
+        draw_line(part, x, y, title, key)  # 월·날짜 순서
+    elif s.chart_type == "pie" and 2 <= len(part) <= 10 and (vals.dropna() > 0).all() and vals.notna().any():
+        draw_pie(part, x, y, title, key)
+    else:
+        draw_bar(part, x, y, title, key)
+    if len(df) > MAX_BARS:
+        st.caption(f"행이 많아 위쪽 {MAX_BARS}개만 그렸습니다 (표에는 전체가 있습니다).")
+    return True
+
+
 def md(text: str) -> str:
     return text.replace("\n", "  \n")  # st.markdown이 줄바꿈을 살리도록
 
@@ -252,13 +332,11 @@ if out is not None:
             st.error(r.error)  # 오류면 숫자를 보여 주지 않는다
             continue
         df = pd.DataFrame(r.rows)
-        kpi_visual(s.tool, r, df, key=f"kpi_{s.step_id}")  # 표로만 나오던 결과는 숫자 카드·막대를 먼저
-        show_table(df)  # 표
-        y = MAIN_VALUE.get(s.tool) or (df.columns[-1] if s.tool == "aggregate" and len(df.columns) else None)
-        if s.chart_type == "bar" and y in df.columns:
-            draw_bar(df, df.columns[0], y, f"{s.purpose} — {y}", key=f"chart_{s.step_id}")  # 차트 (같은 rows, 표와 같은 순서)
+        if not kpi_visual(s.tool, r, df, key=f"kpi_{s.step_id}"):  # 기한 초과 목록·빠진 정보는 전용 카드+막대
+            auto_visual(s, r, df, key=f"chart_{s.step_id}")  # 그 밖의 결과도 그릴 수 있으면 그림을 먼저 (같은 rows)
         if s.tool == "mh_overrun":
             mh_note(r.rows)
+        show_table(df)  # 표
         st.caption(f"기준: {r.basis} | 단위: {r.unit} | 사용 행: {r.used_rows}")
     with st.expander("실행 기록"):
         st.dataframe(pd.DataFrame([{
