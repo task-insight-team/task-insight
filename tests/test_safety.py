@@ -101,7 +101,7 @@ def test_dataset_from_reloaded_module_runs():
 
 
 def test_all_tools_run_on_reloaded_dataset():
-    """도구 9개가 재로드 후 Dataset에서 형식 오류 없이 돈다."""
+    """도구 10개가 재로드 후 Dataset에서 형식 오류 없이 돈다."""
     ds = _reloaded_dataset()
     calls = {
         "aggregate": {"op": "count", "group_by": ["부서"]},
@@ -113,6 +113,8 @@ def test_all_tools_run_on_reloaded_dataset():
         "mh_overrun": {},
         "cost_vs_budget": {},
         "check_missing_data": {},
+        "calculate_ratio": {"kind": "condition_rate", "group_by": ["부서"],
+                            "condition": [{"column": "상태", "op": "==", "value": "완료"}]},
     }
     from engine import TOOLS
     assert set(calls) == set(TOOLS)

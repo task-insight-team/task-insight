@@ -471,3 +471,33 @@ def test_holdout_h09_answerable_with_max(datasets):
     """집계 max(최댓값) 추가로 '분류별 최고 단가'(H09)는 엔진으로 정답을 낼 수 있다 (이전에는 한계 질문)."""
     r = holdout_engine_runs(datasets, {"H09": [("aggregate", {"op": "max", "value_column": "단가", "group_by": ["분류"]})]})
     assert r["H09"]["pass"] and r["H09"]["outcome"] == "정답"
+
+
+# ---------------------------------------------------------------------------
+# 월 묶음(aggregate period=month)·비율 도구(calculate_ratio)로 답할 수 있게 된 한계 질문
+# ---------------------------------------------------------------------------
+NEW_TOOL_RIGHT = {
+    "G09": [("calculate_ratio", {"kind": "share", "value_column": "revenue", "group_by": ["region"]})],
+    "G16": [("aggregate", {"op": "sum", "value_column": "수량", "group_by": ["입고일"], "period": "month"})],
+    "G20": [("calculate_ratio", {"kind": "condition_rate", "group_by": ["담당팀"], "sort": "value_asc",
+                                 "condition": [{"column": "처리상태", "op": "==", "value": "처리완료"}]})],
+}
+
+
+def test_general_limit_answerable_with_month_and_ratio(datasets):
+    report = engine_runs(datasets, NEW_TOOL_RIGHT)
+    wrong = {k: r["reason"] for k, r in report.items() if not r["pass"]}
+    assert not wrong and all(r["outcome"] == "정답" for r in report.values())
+
+
+def test_holdout_h17_answerable_with_monthly_condition_rate(datasets):
+    calls = [("calculate_ratio", {"kind": "condition_rate", "group_by": ["접수일"], "period": "month",
+                                  "condition": [{"column": "처리상태", "op": "==", "value": "처리완료"}]})]
+    r = holdout_engine_runs(datasets, {"H17": calls})["H17"]
+    assert r["pass"] and r["outcome"] == "정답", r["reason"]
+
+
+def test_general_g14_answerable_with_compare_column(datasets):
+    calls = [("aggregate", {"op": "count", "filters": [{"column": "수량", "op": "<", "compare_column": "안전재고"}]})]
+    r = engine_runs(datasets, {"G14": calls})["G14"]
+    assert r["pass"] and r["outcome"] == "정답", r["reason"]

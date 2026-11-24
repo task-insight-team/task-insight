@@ -21,6 +21,7 @@ from contracts import (
     CountOverdueParams,
     FindRecurringParams,
     MhOverrunParams,
+    RatioParams,
     SummarizeByCategoryParams,
     ToolResult,
 )
@@ -37,7 +38,9 @@ class ToolSpec:
 
 TOOLS: dict[str, ToolSpec] = {
     "aggregate": ToolSpec(tools.aggregate, AggregateParams,
-        "합계(sum)·평균(mean)·개수(count)·최댓값(max)·최솟값(min). table(main/employees/projects), group_by, filters, sort, top_n. 일반 CSV에도 쓸 수 있다."),
+        "합계(sum)·평균(mean)·개수(count)·최댓값(max)·최솟값(min). table(main/employees/projects), group_by, filters, sort, top_n. period=month면 group_by의 날짜 컬럼을 월별로 묶는다(월별 추이). 일반 CSV에도 쓸 수 있다."),
+    "calculate_ratio": ToolSpec(tools.calculate_ratio, RatioParams,
+        "비율(%). kind=share: 그룹별 비중(value_column 합계 또는 건수, group_by 필수) / column_ratio: 합계(value_column)÷합계(denominator_column) (예: 불량률) / condition_rate: condition에 맞는 행 수÷전체 행 수 (예: 완료 비율). group_by·filters·period=month. 일반 CSV에도 쓸 수 있다."),
     "compare_periods": ToolSpec(tools.compare_periods, ComparePeriodsParams,
         "두 달(YYYY-MM)의 건수·합계·평균 비교, 증감과 증감률. previous 생략 시 전월. 일반 CSV에도 쓸 수 있다."),
     "count_overdue_tasks": ToolSpec(tools.count_overdue_tasks, CountOverdueParams,
@@ -136,7 +139,10 @@ def _flatten(node: object, defs: dict) -> object:
                 merged["nullable"] = True
             return merged
         return {**_flatten(rest, defs), "anyOf": _flatten(branches, defs)}
-    out = {k: _flatten(v, defs) for k, v in node.items() if k != "$defs"}
+    out = {k: _flatten(v, defs) for k, v in node.items() if k not in ("$defs", "const")}
+    if "const" in node:  # 값이 하나뿐인 Literal은 const로 나오는데 Gemini Schema는 const를 받지 않는다
+        out["enum"] = [node["const"]]
+        out.setdefault("type", "string")
     if "properties" in node:
         out["properties"] = {k: _flatten(v, defs) for k, v in node["properties"].items()}
     if not any(k in out for k in ("type", "anyOf", "properties", "items", "enum")):
