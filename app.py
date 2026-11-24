@@ -218,7 +218,7 @@ def kpi_visual(tool: str, r, df: pd.DataFrame, key: str) -> bool:
 
 TIME_RE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")  # 2026-01 / 2026-01-05 처럼 월·날짜 순서인 첫 컬럼
 SKIP_COLS = {"원본 행", "행", "비고", "순위"}  # 그림의 값으로 쓰지 않는 컬럼
-PREFER = ("(%)", "(건)", "MH", "일수", "합계", "개수", "평균", "증감")  # 값 컬럼을 고를 때 먼저 보는 이름
+PREFER = ("(%)", "(건)", "MH", "일수", "합계", "개수", "평균", "증감")  # 값 컬럼을 고를 때 먼저 보는 이름 (단, "값("으로 시작하는 나눗셈 결과는 이보다 먼저)
 MAX_BARS = 30  # 한 그림에 그리는 최대 행 수 (표에는 전체가 있다)
 
 
@@ -234,6 +234,9 @@ def pick_value_column(tool: str, df: pd.DataFrame):
         return main
     if tool == "aggregate" and len(df.columns) and df.columns[-1] in ok:
         return df.columns[-1]
+    for c in ok:  # 나눗셈 결과 '값(매출액÷판매수량)'이 합계(매출액)·합계(판매수량)보다 먼저 그려져야 한다
+        if str(c).startswith("값("):
+            return c
     for key in PREFER:
         for c in ok:
             if key in str(c):
@@ -269,7 +272,7 @@ def auto_visual(s, r, df: pd.DataFrame, key: str) -> bool:
     cols = numeric_cols(df)
     if len(df) == 1:  # 한 줄 결과: 숫자 카드
         if r.value is not None:
-            st.metric(s.purpose, f"{num_label(r.value)} {r.unit}")
+            st.metric(s.purpose, f"{num_label(r.value)} {r.unit}".strip())
             return True
         shown = cols[:4]
         if not shown:
