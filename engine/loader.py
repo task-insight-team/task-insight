@@ -47,6 +47,8 @@ NUMBER_RE = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 # 20260105처럼 구분자 없는 8자리는 일반 숫자와 구분할 수 없어 바꾸지 않는다.
 GENERIC_DATE_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$")
 GENERIC_MONTH_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})$")
+# 연도가 뒤에 오는 날짜 (01/15/2026, 15.01.2026 13:45). 월/일 순서는 값을 보고 정한다
+GENERIC_DMY_RE = re.compile(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$")
 # 일반 CSV 전용: 숫자 앞뒤의 통화·단위 기호 (₩1,200 / 1,200원 / $15 / 12.5%)
 UNIT_RE = re.compile(r"^\s*[₩$]?\s*(.*?)\s*(원|%)?\s*$")
 # 앞자리 0이 있는 코드(우편번호 00123 등)는 숫자로 바꾸지 않는다
@@ -59,7 +61,7 @@ DELIMITERS = [",", ";", "\t", "|"]
 # ---------------------------------------------------------------------------
 # Dataset 구조 버전. load_dataset·build_dataset가 만드는 표 구조(파생 컬럼, 결합 방식, 컬럼 형식)를 바꾸면 1 올린다.
 # run_tool은 버전이 다른 Dataset(예: 앱 업데이트 전에 불러와 캐시에 남은 데이터)으로는 계산하지 않는다.
-DATASET_VERSION = 1
+DATASET_VERSION = 2  # 2: 일반 CSV 형식 오류를 행 전체가 아니라 그 칸만 제외, 연도가 뒤에 오는 날짜 인식
 
 
 @dataclass
@@ -165,14 +167,25 @@ def _report(df: pd.DataFrame, filename: str, kind: str, encoding: Optional[str],
                             encoding=encoding, columns=columns, issues=issues)
 
 
-def _to_number(df: pd.DataFrame, col: str, issues: list[Issue], allow_negative: bool = False) -> None:
+CELL_ONLY = "그 칸만 빈칸으로 보고 이 컬럼 계산에서 제외합니다 (같은 행의 다른 컬럼은 그대로 씁니다)."
+
+
+def _to_number(df: pd.DataFrame, col: str, issues: list[Issue], allow_negative: bool = False,
+               row_level: bool = True) -> None:
+    """숫자로 바꾼다. 숫자가 아닌 값은 빈칸(NA)이 된다.
+
+    row_level=True(표준 표): 그 행을 형식 오류로 보고 모든 계산에서 뺀다 (업무 표는 행 단위로 믿을 수 있어야 함).
+    row_level=False(일반 CSV): 그 칸만 뺀다. 다른 컬럼의 글자 섞인 값 때문에 상관없는 컬럼 계산이 틀어지지 않게.
+    """
     text = df[col]
     clean = text.fillna("").str.replace(",", "", regex=False)
     bad = text.notna() & ~clean.str.match(NUMBER_RE)
     if bad.any():
+        what = "해당 행은 계산에서 제외합니다." if row_level else CELL_ONLY
         issues.append(_issue("warning", "invalid_number",
-                             f"'{_label(col)}'에 숫자가 아닌 값이 있습니다 (예: N/A, 없음). 해당 행은 계산에서 제외합니다.", bad, df))
-        df.loc[bad, "_invalid"] = True
+                             f"'{_label(col)}'에 숫자가 아닌 값이 있습니다 (예: N/A, 없음). {what}", bad, df))
+        if row_level:
+            df.loc[bad, "_invalid"] = True
     df[col] = pd.to_numeric(clean.where(~bad & text.notna()), errors="coerce").astype("Float64")
     if not allow_negative:
         neg = (df[col] < 0).fillna(False).astype(bool)
@@ -318,7 +331,7 @@ def _validate_generic(df: pd.DataFrame, filename: str, encoding: Optional[str]):
                 issues.append(Issue(level="info", code="unit_removed",
                                     message=f"'{_label(col)}'의 단위 기호({', '.join(units)})를 빼고 숫자로 읽었습니다.",
                                     count=int(nonnull.str.contains(r"[₩$원%]").sum())))
-            _to_number(df, col, issues, allow_negative=True)
+            _to_number(df, col, issues, allow_negative=True, row_level=False)
     issues.extend(_duplicate_issues(df, None))
     return df, _report(df, filename, "generic", encoding, issues)
 
@@ -328,11 +341,24 @@ def _normalize_dates(df: pd.DataFrame, col: str, nonnull: pd.Series, issues: lis
     def plausible(year: pd.Series, mon: pd.Series) -> pd.Series:
         return (year.astype("Float64").between(1900, 2100) & mon.astype("Float64").between(1, 12)).fillna(False).astype(bool)
 
+    def to_iso(y: pd.Series, m: pd.Series, d: pd.Series) -> tuple[pd.Series, pd.Series]:
+        iso = y + "-" + m.str.zfill(2) + "-" + d.str.zfill(2)
+        return iso, pd.to_datetime(iso, format=DATE_FORMAT, errors="coerce").notna() & plausible(y, m)
+
     day = nonnull.str.extract(GENERIC_DATE_RE)
     month = nonnull.str.extract(GENERIC_MONTH_RE)
-    day_iso = day[0] + "-" + day[1].str.zfill(2) + "-" + day[2].str.zfill(2)
-    day_ok = pd.to_datetime(day_iso, format=DATE_FORMAT, errors="coerce").notna() & plausible(day[0], day[1])
+    day_iso, day_ok = to_iso(day[0], day[1], day[2])
     month_ok = plausible(month[0], month[1])
+    dmy = nonnull.str.extract(GENERIC_DMY_RE)
+    if day_ok.mean() < 0.5 and dmy[0].notna().mean() >= 0.5:  # 연도가 뒤: 13 이상인 쪽이 일
+        a, b = dmy[0].astype("Float64"), dmy[1].astype("Float64")
+        a_day, b_day = bool((a > 12).any()), bool((b > 12).any())
+        if a_day == b_day:  # 둘 다 12 이하(또는 둘 다 13 이상)면 월/일 순서를 알 수 없어 바꾸지 않는다
+            issues.append(Issue(level="info", code="date_ambiguous",
+                                message=f"'{_label(col)}'는 월/일 순서를 알 수 없어 날짜로 바꾸지 않았습니다 (YYYY-MM-DD로 올려 주세요).",
+                                count=int(dmy[0].notna().sum())))
+            return False
+        day_iso, day_ok = to_iso(dmy[2], dmy[1], dmy[0]) if a_day else to_iso(dmy[2], dmy[0], dmy[1])
     if day_ok.mean() >= 0.5:
         iso, good, label = day_iso, day_ok, "YYYY-MM-DD"
     elif month_ok.mean() >= 0.5:  # 1500.50 같은 소수는 월 범위(1~12)를 벗어나 여기서 걸러진다
@@ -347,11 +373,11 @@ def _normalize_dates(df: pd.DataFrame, col: str, nonnull: pd.Series, issues: lis
         issues.append(Issue(level="info", code="date_normalized",
                             message=f"'{_label(col)}' 날짜 표기를 {label} 형식으로 맞췄습니다.",
                             count=changed))
-    if len(bad):
+    if len(bad):  # 일반 CSV: 그 칸만 빈칸으로 (날짜를 쓰는 계산에서만 빠지고, 같은 행의 숫자는 그대로 쓴다)
         mask = df.index.isin(bad)
-        issues.append(_issue("warning", "invalid_date", f"'{_label(col)}'에 날짜로 읽을 수 없는 값이 있습니다. 해당 행은 계산에서 제외합니다.",
+        issues.append(_issue("warning", "invalid_date", f"'{_label(col)}'에 날짜로 읽을 수 없는 값이 있습니다. {CELL_ONLY}",
                              pd.Series(mask, index=df.index), df))
-        df.loc[mask, "_invalid"] = True
+        df.loc[mask, col] = pd.NA
     return True
 
 

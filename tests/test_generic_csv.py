@@ -33,12 +33,15 @@ def test_mixed_date_formats_are_normalized():
     assert r.ok and r.rows[0]["2026-01"] == 600 and r.rows[0]["2026-02"] == 400 and r.value == -33.33
 
 
-def test_bad_dates_are_flagged_and_excluded():
+def test_bad_dates_are_flagged_and_only_that_cell_excluded():
+    """일반 CSV: 날짜로 읽을 수 없는 칸만 빈칸 → 날짜를 쓰는 계산에서만 빠지고, 같은 행의 숫자는 그대로 쓴다."""
     res = load("date,amount\n2026-01-05,1\n2026-02-30,2\n2026/02/10,3\n모름,4\n")
     bad = next(i for r in res.reports for i in r.issues if i.code == "invalid_date")
-    assert bad.rows == [2, 4]
+    assert bad.rows == [2, 4] and "그 칸만" in bad.message
     r = run_tool(res.dataset, "aggregate", {"op": "sum", "value_column": "amount"})
-    assert r.value == 4 and r.used_rows == 2
+    assert r.value == 10 and r.used_rows == 4
+    r = run_tool(res.dataset, "aggregate", {"op": "sum", "value_column": "amount", "group_by": ["date"], "period": "month"})
+    assert {x["date(월)"]: x["합계(amount)"] for x in r.rows} == {"2026-01": 1, "2026-02": 3}
 
 
 def test_dotted_month_column():
@@ -58,9 +61,9 @@ def test_currency_and_percent_units():
     res = load("item,price,rate\nA,₩1200,12.5%\nB,1500원,8%\nC,\"1,800\",10%\nD,(300),5%\n")
     assert "unit_removed" in codes(res)
     price = run_tool(res.dataset, "aggregate", {"op": "sum", "value_column": "price"})
-    assert price.value == 4500 and price.used_rows == 3  # (300)은 숫자 아님 → 제외
-    # 형식 오류 행은 행 전체를 계산에서 뺀다 → D행의 rate(5%)도 빠져 (12.5+8+10)/3
-    assert run_tool(res.dataset, "aggregate", {"op": "mean", "value_column": "rate"}).value == 10.17
+    assert price.value == 4500 and price.used_rows == 3  # (300)은 숫자 아님 → 그 칸만 제외
+    # 일반 CSV는 그 칸만 뺀다 → D행의 rate(5%)는 그대로 써서 (12.5+8+10+5)/4
+    assert run_tool(res.dataset, "aggregate", {"op": "mean", "value_column": "rate"}).value == 8.88
 
 
 def test_leading_zero_codes_stay_text():
@@ -294,3 +297,42 @@ def test_percent_false_only_for_column_ratio():
                         ("condition_rate", {"condition": [{"column": "status", "op": "==", "value": "완료"}]})):
         r = ratio({"kind": kind, "percent": False, **extra})
         assert not r.ok and "column_ratio에서만" in r.error
+
+
+# ---------------------------------------------------------------------------
+# 일반 CSV 형식 오류는 그 칸만 제외 (DATASET_VERSION 2). 표준 업무 표는 지금처럼 행 전체 제외
+# ---------------------------------------------------------------------------
+def test_text_in_other_numeric_column_does_not_change_this_column():
+    """Ticket처럼 숫자·글자가 섞인 컬럼 때문에 상관없는 Fare 평균이 바뀌면 안 된다 (DABench test_ave.csv에서 발견)."""
+    res = load("ticket,fare\nA/5 21171,10\n113803,20\n3101,30\nPC 17599,40\n12345,50\n")
+    issue = next(i for r in res.reports for i in r.issues if i.code == "invalid_number")
+    assert issue.rows == [1, 4] and "그 칸만" in issue.message
+    ds = res.dataset
+    assert run_tool(ds, "aggregate", {"op": "mean", "value_column": "fare"}).value == 30  # 5행 모두
+    t = run_tool(ds, "aggregate", {"op": "sum", "value_column": "ticket"})
+    assert t.value == 113803 + 3101 + 12345 and t.used_rows == 3  # 글자 칸만 빠짐
+    assert not ds.main["_invalid"].any()
+
+
+def test_standard_tables_still_drop_whole_row():
+    """업무 표준 표는 기존 규칙(형식 오류 행은 모든 계산에서 제외) 그대로."""
+    from pathlib import Path
+    df, rep = read_table(Path(__file__).resolve().parents[1] / "data" / "errors" / "bad_tasks.csv")
+    issue = next(i for i in rep.issues if i.code == "invalid_number")
+    assert rep.kind == "tasks" and "해당 행은 계산에서 제외" in issue.message
+    assert df.loc[df["_row"] == issue.rows[0], "_invalid"].all()
+
+
+def test_year_last_dates_month_first_and_day_first():
+    us = load("when,v\n01/15/2026 10:00,1\n02/03/2026 00:00,2\n12/31/2026 23:59,3\n")
+    assert list(us.dataset.main["when"]) == ["2026-01-15", "2026-02-03", "2026-12-31"]
+    r = run_tool(us.dataset, "aggregate", {"op": "mean", "value_column": "v", "group_by": ["when"], "period": "month"})
+    assert {x["when(월)"]: x["평균(v)"] for x in r.rows} == {"2026-01": 1, "2026-02": 2, "2026-12": 3}
+    eu = load("when,v\n15.01.2026,1\n03.02.2026,2\n")
+    assert list(eu.dataset.main["when"]) == ["2026-01-15", "2026-02-03"]
+
+
+def test_ambiguous_year_last_dates_are_not_guessed():
+    res = load("when,v\n01/02/2026,1\n03/04/2026,2\n")
+    assert "date_ambiguous" in codes(res)
+    assert list(res.dataset.main["when"]) == ["01/02/2026", "03/04/2026"]  # 월/일을 추측하지 않고 글자로 둔다
