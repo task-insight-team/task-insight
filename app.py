@@ -30,6 +30,13 @@ st.title("Task Insight")
 
 
 KAFE_DIR = Path(__file__).parent / "data" / "kafe"
+CAFE_DIR = Path(__file__).parent / "data" / "cafe"  # 우리 카페 예시 (가상 합성 데이터, 개인정보 없음)
+CAFE_LABEL = "예시 데이터 (우리 카페)"
+EXAMPLES_DIR = Path(__file__).parent / "data" / "examples"  # 재고·영업·품질 엑셀(CSV) 예시 (가상 합성 데이터)
+JH_DIR = Path(__file__).parent / "data" / "jhwlab"  # 가상카페(한국어 연습) 학습 기록 예시 (가상 합성 데이터)
+JH_LABEL = "예시 데이터 (가상카페 학습 기록)"
+BIZ_LABEL = "예시 데이터 (재고·영업·품질)"
+BIZ_FILES = {"재고관리": "inventory.csv", "영업관리": "sales.csv", "품질관리": "quality.csv"}
 KIND_NAMES = {"tasks": "업무", "employees": "직원", "projects": "프로젝트", "generic": "일반 CSV"}
 SHOW_LEVEL = {"error": st.error, "warning": st.warning, "info": st.info}
 
@@ -105,9 +112,16 @@ def show_load_report(res, previews):
 
 
 st.subheader("1. 데이터")
-source = st.radio("분석할 데이터", ["예시 데이터 (kafe)", "내 CSV 올리기"], horizontal=True)
-if source.startswith("예시"):
+source = st.radio("분석할 데이터", ["예시 데이터 (kafe)", JH_LABEL, CAFE_LABEL, BIZ_LABEL, "내 CSV 올리기"], horizontal=True)
+if source == "예시 데이터 (kafe)":
     files = tuple((f"{n}.csv", (KAFE_DIR / f"{n}.csv").read_bytes()) for n in ("tasks", "employees", "projects"))
+elif source == JH_LABEL:
+    files = (("cafe_practice.csv", (JH_DIR / "cafe_practice.csv").read_bytes()),)
+elif source == CAFE_LABEL:
+    files = (("cafe_sales.csv", (CAFE_DIR / "cafe_sales.csv").read_bytes()),)
+elif source == BIZ_LABEL:
+    biz = st.selectbox("예시 파일 (한 번에 하나씩 분석합니다)", list(BIZ_FILES), key="biz_pick")
+    files = ((BIZ_FILES[biz], (EXAMPLES_DIR / BIZ_FILES[biz]).read_bytes()),)
 else:
     uploads = st.file_uploader(
         "CSV 파일을 올려 주세요 (업무·직원·프로젝트 파일 각 1개, 또는 일반 CSV 1개 / 파일당 10MB 이하)",
@@ -146,11 +160,42 @@ KAFE_EXAMPLES = [  # 발표용 질문 5개. 클릭하면 질문 입력창을 채
 SAMPLE_EXAMPLES = ["지역별 매출은?", "전월 대비 매출 변화와 감소 지역은?"]  # month·region·sales 컬럼이 있는 일반 CSV용
 
 
+CAFE_EXAMPLES = [  # 우리 카페 예시 (날짜·메뉴·분류·판매수량·매출액 컬럼이 있는 일반 CSV용)
+    "메뉴별 매출 합계는?",
+    "월별 매출 합계는?",
+    "분류별 매출 비중은?",
+    "메뉴별 평균 판매단가는?",
+    "10월은 9월보다 매출이 얼마나 변했나?",
+]
+
+
+JH_EXAMPLES = [  # 가상카페 학습 기록 (날짜·장면·학습자수·연습횟수·완료횟수·평균발음점수)
+    "장면별 연습 횟수 합계는?",
+    "장면별 완료횟수 ÷ 연습횟수 비율은?",
+    "월별 연습 횟수 합계는?",
+    "장면별 평균 발음 점수는?",
+    "장면별로 10월은 9월보다 연습 횟수가 얼마나 변했나?",
+]
+BIZ_EXAMPLES = [  # (이 컬럼이 모두 있으면, 이 예시 질문)
+    ({"품목", "창고", "현재수량", "단가"}, ["창고별 재고금액은?", "품목별 현재수량 합계는?", "창고별 현재수량 합계는?"]),
+    ({"거래일", "지역", "상품", "매출액", "판매수량"}, ["지역별 매출 비중은?", "상품별 평균 판매단가는?", "월별 매출 합계는?"]),
+    ({"발생일", "공정", "불량유형", "생산수량", "불량수량"}, ["공정별 불량률은?", "불량유형별 불량수량 합계는?", "월별 불량수량 합계는?"]),
+]
+
+
 def example_questions(ds) -> list[str]:
     """데이터에 맞는 예시 질문만 돌려 준다 (맞지 않는 데이터에는 보여 주지 않는다)."""
     if ds.kind == "standard":
         return KAFE_EXAMPLES
-    return SAMPLE_EXAMPLES if {"month", "region", "sales"} <= set(map(str, ds.main.columns)) else []
+    cols = set(map(str, ds.main.columns))
+    if {"장면", "연습횟수", "완료횟수"} <= cols:
+        return JH_EXAMPLES
+    if {"날짜", "메뉴", "매출액"} <= cols:
+        return CAFE_EXAMPLES
+    for need, qs in BIZ_EXAMPLES:  # 재고·영업·품질 예시 파일별 질문
+        if need <= cols:
+            return qs
+    return SAMPLE_EXAMPLES if {"month", "region", "sales"} <= cols else []
 
 
 def show_value(v) -> str:
