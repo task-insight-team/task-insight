@@ -104,6 +104,7 @@
 | [docs/presentation_prep.md](docs/presentation_prep.md) | 발표 준비 (뼈대 · 시연 정답표) |
 | [docs/benchmark/README.md](docs/benchmark/README.md) | 오픈소스 벤치마킹 분석 |
 | [docs/plan_day1.md](docs/plan_day1.md) | Day 1 기획안 (킥오프 기록) |
+| [docs/initial_plan_review.md](docs/initial_plan_review.md) | 초기 기획안과 결과물 비교 (Discussion 포함) |
 | [eval/README.md](eval/README.md) | 에이전트 채점 |
 | [agent/README.md](agent/README.md) · [engine/CLAUDE.md](engine/CLAUDE.md) | 에이전트 · 엔진 사용법 |
 

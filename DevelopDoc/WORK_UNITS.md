@@ -28,7 +28,7 @@
 | 6 | 검증: 사전 정답 질문 10~20개로 정확도·도구 선택 검증 | 약 97문항 6개 묶음 (엔진 테스트 + `eval/`) |
 | 7 | 배포·발표: 공개용 가상 데이터, 실제 동작 시연 | 배포 완료, 발표 준비 중 (WU-7) |
 
-일정 날짜의 근거는 [docs/plan_day1.md](../docs/plan_day1.md)와 `docs/initial_plan_review.md`(PR #56)다.
+일정 날짜의 근거는 [docs/plan_day1.md](../docs/plan_day1.md)와 [docs/initial_plan_review.md](../docs/initial_plan_review.md)다.
 
 ## 공통 완료 조건 (모든 작업 단위)
 

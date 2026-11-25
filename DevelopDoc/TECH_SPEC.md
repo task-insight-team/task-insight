@@ -133,7 +133,7 @@ streamlit run app.py
 ## 12. 초기 구조 대비 변경 (프로젝트 시작 시점 → 최종)
 
 초기 구조: 사용자 질문 → LLM(질문 분석·도구 선택) → Pandas(정확한 계산) → 시각화 엔진(차트) → LLM(결과 해석).
-상세 비교와 Discussion은 `docs/initial_plan_review.md`(PR #56).
+상세 비교와 Discussion은 [docs/initial_plan_review.md](../docs/initial_plan_review.md).
 
 | 항목 | 초기 계획 | 최종 | 판정 |
 |---|---|---|---|
