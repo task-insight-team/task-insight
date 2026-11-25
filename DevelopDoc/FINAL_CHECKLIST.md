@@ -7,7 +7,7 @@
 ## 1. 제출물
 
 - [x] 저장소 링크 — https://github.com/task-insight-team/task-insight
-- [x] 배포 URL — https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/ (README 배포 URL 절)
+- [x] 배포 URL — 분석 앱 https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/ · 소개 홈페이지 https://task-insight-vwm7.netlify.app/ (README 배포 URL 절)
 - [x] `README.md` (저장소 최상단): 서비스 소개, 배포 URL, 시작하기, 테스트 방법, 팀, 제출 정보, 라이선스
 - [ ] README '제출 커밋' 칸에 제출 커밋 식별자를 기록했다
 - [x] `DevelopDoc/PRD.md`
@@ -59,7 +59,7 @@
 
 ## 6. 배포·시연
 
-- [x] Streamlit Community Cloud 배포 URL이 있다
+- [x] Streamlit Community Cloud(분석 앱)와 Netlify(소개 홈페이지) 배포 URL이 있다
 - [ ] 배포 앱을 미리 열어 깨워 두었다 (잠든 앱은 30초~1분)
 - [ ] 시연 질문 5개가 배포 앱에서 정답으로 동작한다
 - [ ] Gemini 503·504 등 장애 대비 로컬 백업 화면 캡처를 준비했다

@@ -13,7 +13,7 @@
 | LLM | Gemini API, function calling (`google-genai` 3.6.1). 기본 모델 `gemini-3.5-flash-lite` (`GEMINI_MODEL`로 변경) |
 | 테스트 | pytest 9.2.0 |
 | CI | GitHub Actions (`.github/workflows/ci.yml`): PR·main push마다 `python -m pytest -q`. Gemini 키 없이 실행하고 live 테스트는 건너뜀 |
-| 배포 | Streamlit Community Cloud — https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/ |
+| 배포 | Streamlit Community Cloud — https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/ (분석 앱), Netlify — https://task-insight-vwm7.netlify.app/ (소개 홈페이지) |
 
 패키지는 `requirements.txt`에 `==`로 고정하고, 이 파일에는 한글을 쓰지 않는다 (Windows pip가 cp949로 읽어 설치 실패).
 
@@ -115,7 +115,7 @@ streamlit run app.py
 
 - Community Cloud 배포 앱: https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/ (잠든 앱은 첫 접속에 30초~1분)
 - Gemini 키는 Cloud의 Secrets에 등록한다. 저장소에는 올리지 않는다.
-- 소개 홈페이지(`ui/homepage/index.html`)는 배포 앱을 iframe으로 포함한다. 홈페이지 자체는 정적 파일이라 별도 배포가 없다.
+- 소개 홈페이지(`ui/homepage/index.html`)는 배포 앱을 iframe으로 포함한다. 홈페이지 자체는 정적 파일이며 Netlify에 배포되어 있다 (https://task-insight-vwm7.netlify.app/).
 
 ## 10. Git 규칙
 

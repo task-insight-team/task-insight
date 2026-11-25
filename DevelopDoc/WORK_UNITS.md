@@ -112,7 +112,7 @@
 - [x] 정답 파일(`tests/fixtures/kafe/`)을 에이전트 쪽에 노출하지 않는다
 - [x] 데이터 규칙·데이터 설명·정답표 문서
 - [x] 평가 채점 도구(`eval/`)와 질문 묶음 (core·paraphrase·refuse·demo·general·holdout)
-- [x] Streamlit Community Cloud 배포 URL이 있다 (https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/, README 배포 URL 절)
+- [x] 배포 URL이 있다: 분석 앱(Streamlit Community Cloud) https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/, 소개 홈페이지(Netlify) https://task-insight-vwm7.netlify.app/ (README 배포 URL 절)
 - [x] 개발 문서(README, PRD, TECH_SPEC, WORK_UNITS, FINAL_CHECKLIST)
 - [x] MIT 라이선스와 예외 대상(sample.csv, 홈페이지 이미지, 외부 패키지)을 README에 표기
 - [ ] 발표 직전 배포 앱 동작 확인 (예시 질문 5개)

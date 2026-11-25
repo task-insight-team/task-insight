@@ -2,7 +2,7 @@
 
 업무·직원·프로젝트 CSV를 올리고 질문하면, AI가 **분석 계획을 세우고 → 사용자가 승인하면 → 검증된 계산 도구를 실행해** 표·차트·근거로 답하는 웹 도구입니다. 여러 CSV를 합칠 때 생기는 수치 부풀림과, LLM이 숫자를 지어내는 문제를 막는 데 초점을 둡니다.
 
-> [배포 앱 열기](https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/) · [개발 문서](DevelopDoc/PRD.md) · [MIT 라이선스](LICENSE) · [제3자 자료 안내](NOTICE.md)
+> [배포 앱 열기](https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/) · [소개 홈페이지](https://task-insight-vwm7.netlify.app/) · [개발 문서](DevelopDoc/PRD.md) · [MIT 라이선스](LICENSE) · [제3자 자료 안내](NOTICE.md)
 
 바이브 코딩 해커톤 팀 프로젝트입니다. 시연 데이터(`data/kafe/`의 (가상) 한빛센서텍, 기준일 2026-11-19)는 모두 가상 데이터입니다.
 
@@ -11,11 +11,12 @@
 | 용도 | 주소 |
 |---|---|
 | 분석 앱 (Streamlit Community Cloud) | https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/ |
+| 소개 홈페이지 (Netlify) | https://task-insight-vwm7.netlify.app/ |
 
 - 접속이 없으면 앱이 잠들어, 처음 열 때 30초~1분 걸립니다. 발표·심사 전에 한 번 열어 깨워 두세요.
 - 로그인은 없습니다 (과제 Step 2 의도적 제외). 화면에서 예시 데이터를 고르거나 CSV를 올립니다.
 - 시연 질문은 화면의 예시 질문 버튼을 쓰면 됩니다. Gemini API 키는 배포 환경의 Secrets에만 있고 이 저장소에는 없습니다.
-- 소개 홈페이지(`ui/homepage/index.html`)는 정적 파일이라 별도 배포 없이 브라우저로 열고, 위 앱을 iframe으로 포함합니다.
+- 소개 홈페이지(`ui/homepage/`, 정적 파일)는 Netlify에 배포되어 있고, 위 분석 앱을 iframe으로 포함합니다. 로컬에서는 `ui/homepage/index.html`을 브라우저로 열어도 됩니다.
 
 ## 왜 만들었나
 
