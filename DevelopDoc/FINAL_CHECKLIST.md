@@ -47,24 +47,25 @@
 - [x] 정답 파일(`tests/fixtures/kafe/`, `SCENARIOS.md`)을 에이전트에 제공하지 않는다
 - [x] 날짜 계산에 오늘 날짜를 쓰지 않고 기준일을 입력으로 받는다
 - [x] 원본 DataFrame을 수정하지 않는다
-- [ ] `GEMINI_API_KEY`가 코드, 문서, 커밋 이력, 슬라이드, 화면 캡처 어디에도 없다
-- [ ] `.streamlit/secrets.toml`이 커밋에 포함되지 않았다 (`git ls-files`로 확인)
+- [x] `GEMINI_API_KEY`가 저장소의 코드·문서·커밋 이력에 없다 (키 형식 패턴 검사, 2026-11-25)
+- [ ] `GEMINI_API_KEY`가 슬라이드와 화면 캡처에도 없다
+- [x] `.streamlit/secrets.toml`이 커밋에 포함되지 않았다 (`git ls-files`로 확인, `.gitignore`에 포함)
 
 ## 5. 테스트·CI
 
 - [x] `pytest` 통과 (2026-11-25 최신 main: 565 passed, 11 skipped, 건너뜀은 live Gemini)
 - [x] CI(GitHub Actions)가 PR·main push마다 pytest를 실행한다
-- [ ] 제출 직전 main 최신 커밋에서 CI가 통과(녹색)다
-- [ ] 로컬 `.venv`에서 `pytest`를 다시 실행했다
+- [x] main 최신 커밋(2026-11-25)에서 CI가 통과(녹색)다. 제출 직전에 한 번 더 확인한다
+- [x] 로컬 `.venv`에서 최신 main으로 `pytest`를 다시 실행했다 (2026-11-25: 565 passed, 11 skipped)
 
 ## 6. 배포·시연
 
 - [x] Streamlit Community Cloud(분석 앱)와 Netlify(소개 홈페이지) 배포 URL이 있다
-- [ ] 배포 앱을 미리 열어 깨워 두었다 (잠든 앱은 30초~1분)
+- [x] 배포 앱이 열리는 것을 확인했다 (2026-11-25, 로그인 없이 화면 표시). 앱은 다시 잠들 수 있으므로 발표 직전에 한 번 더 연다
 - [ ] 시연 질문 5개가 배포 앱에서 정답으로 동작한다
 - [ ] Gemini 503·504 등 장애 대비 로컬 백업 화면 캡처를 준비했다
 - [ ] 소개 홈페이지(`ui/homepage/index.html`) 발표 모드(→, 스페이스, ←)를 확인했다
-- [ ] 홈페이지의 배포 앱 iframe 주소가 현재 URL과 같다
+- [x] 홈페이지의 배포 앱 iframe 주소가 현재 URL과 같다 (Netlify 페이지의 iframe 주소 확인, 2026-11-25)
 
 ## 7. 문서·고지
 
