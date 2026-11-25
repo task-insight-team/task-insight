@@ -434,6 +434,100 @@ def summary_md(report: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 반복 측정: 같은 질문을 여러 번 돌려 흔들리는 질문과 점수 범위를 본다 (Gemini 응답은 매번 조금씩 다를 수 있음)
+# ---------------------------------------------------------------------------
+def run_repeat(questions: list[Question], datasets: dict, times: int, round_wait: float = 0.0,
+               sleep: Callable[[float], None] = time.sleep, **kwargs) -> list[list[dict]]:
+    """질문 묶음을 times번 실행·채점한다. 회차마다 채점 결과(report) 목록. kwargs는 run_questions로 넘긴다.
+
+    회차 사이에 round_wait초 쉰다 (무료 한도 보호). 각 회차는 독립이다 (한도 초과 연속 판정도 회차마다 새로).
+    """
+    reports = []
+    for i in range(times):
+        if i and round_wait:
+            sleep(round_wait)
+        reports.append(grade(run_questions(questions, datasets, sleep=sleep, **kwargs)))
+    return reports
+
+
+def repeat_summary(reports: list[list[dict]]) -> dict:
+    """회차별 결과를 묶음·질문 단위로 모은다. 측정 못 한 회차는 질문의 분모에서 뺀다."""
+    rounds = []
+    for rep in reports:
+        by_set: dict[str, dict] = {}
+        for r in rep:
+            b = by_set.setdefault(r["set"], {"passed": 0, "measured": 0, "total": 0})
+            b["total"] += 1
+            if r.get("measured", True):
+                b["measured"] += 1
+                b["passed"] += int(r["pass"])
+        rounds.append(by_set)
+    questions: dict[str, dict] = {}
+    for rep in reports:
+        for r in rep:
+            q = questions.setdefault(r["id"], {"id": r["id"], "set": r["set"], "question": r["question"],
+                                               "passes": 0, "measured": 0, "outcomes": []})
+            q["outcomes"].append(r["outcome"])
+            if r.get("measured", True):
+                q["measured"] += 1
+                q["passes"] += int(r["pass"])
+    for q in questions.values():
+        q["flaky"] = 0 < q["passes"] < q["measured"]  # 같은 질문이 어떤 회차엔 맞고 어떤 회차엔 틀림
+    sets = sorted({s for rnd in rounds for s in rnd}, key=lambda x: (*SETS, *EXTRA_SETS).index(x)
+                  if x in (*SETS, *EXTRA_SETS) else 99)
+    per_set = {}
+    for s in sets:
+        scores = [rnd[s]["passed"] for rnd in rounds if s in rnd]
+        measured = [rnd[s]["measured"] for rnd in rounds if s in rnd]
+        per_set[s] = {"scores": scores, "measured": measured, "total": max(rnd[s]["total"] for rnd in rounds if s in rnd),
+                      "min": min(scores), "max": max(scores), "mean": round(sum(scores) / len(scores), 2)}
+    return {"times": len(reports), "sets": per_set, "questions": list(questions.values())}
+
+
+def repeat_md(summary: dict) -> str:
+    """반복 측정 표: 묶음별 회차 점수·평균·범위, 흔들린 질문, 질문별 통과 횟수."""
+    n = summary["times"]
+    lines = [f"반복 측정 {n}회 (같은 질문·같은 프롬프트, 질문당 {n}번 실행)", "",
+             "| 묶음 | 회차별 정답 (측정한 질문 수) | 평균 | 최소~최대 |", "|---|---|---|---|"]
+    for s, v in summary["sets"].items():
+        each = ", ".join(f"{p}/{m}" for p, m in zip(v["scores"], v["measured"]))
+        lines.append(f"| {s} | {each} | {v['mean']:g} / {v['total']} | {v['min']}~{v['max']} |")
+    flaky = [q for q in summary["questions"] if q["flaky"]]
+    lines += ["", f"흔들린 질문 (어떤 회차엔 맞고 어떤 회차엔 틀림): {len(flaky)}개"]
+    lines += [f"- {q['id']} {q['question']} — {q['passes']}/{q['measured']} 정답 ({', '.join(q['outcomes'])})" for q in flaky]
+    lines += ["", "| ID | 질문 | 정답 횟수 | 회차별 결과 |", "|---|---|---|---|"]
+    for q in summary["questions"]:
+        lines.append(f"| {q['id']} | {q['question']} | {q['passes']}/{q['measured']} | {', '.join(q['outcomes'])} |")
+    return "\n".join(lines) + "\n"
+
+
+def _main_repeat(args, sets, questions) -> int:
+    print(f"질문 {len(questions)}개 × {args.repeat}회 실행 중 (회차 사이 {args.round_wait:g}초 대기)...", flush=True)
+    datasets = load_datasets()
+    reports = []
+    for i in range(args.repeat):  # 회차마다 진행 표시를 보여 주려고 run_repeat 대신 한 회차씩
+        if i and args.round_wait:
+            time.sleep(args.round_wait)
+        print(f"[{i + 1}/{args.repeat}회차]", flush=True)
+        reports += run_repeat(questions, datasets, 1, delay=args.delay, progress=_print_progress,
+                              quota_wait=args.quota_wait, quota_retries=args.quota_retries)
+    summary = repeat_summary(reports)
+    print()
+    for s, v in summary["sets"].items():
+        print(f"{s}: 회차별 정답 {', '.join(f'{p}/{m}' for p, m in zip(v['scores'], v['measured']))} "
+              f"(평균 {v['mean']:g}/{v['total']}, 범위 {v['min']}~{v['max']})")
+    flaky = [q for q in summary["questions"] if q["flaky"]]
+    print(f"흔들린 질문 {len(flaky)}개" + "".join(f"\n  {q['id']} {q['passes']}/{q['measured']} {q['question']}"
+                                                  for q in flaky))
+    print(f"LLM 호출 합계 {sum(r['llm_calls'] for rep in reports for r in rep)}회")
+    if args.out:
+        Path(args.out).write_text(json.dumps({"summary": summary, "rounds": reports}, ensure_ascii=False, indent=2),
+                                  encoding="utf-8")
+    if args.md:
+        Path(args.md).write_text(repeat_md(summary), encoding="utf-8")
+    return 0 if all(r["pass"] for rep in reports for r in rep) else 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="에이전트 채점 (실제 Gemini 호출)")
     ap.add_argument("--only", nargs="*", help="이 ID만 실행 (예: Q1 Q4 S4)")
@@ -444,6 +538,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--md", help="측정 표(정확도·시간·호출 수)를 마크다운으로 저장할 경로")
     ap.add_argument("--quota-wait", type=float, default=QUOTA_WAIT_S, help="한도 초과 질문을 다시 돌리기 전 대기 초")
     ap.add_argument("--quota-retries", type=int, default=QUOTA_RETRIES, help="한도 초과 질문을 다시 돌리는 최대 횟수")
+    ap.add_argument("--repeat", type=int, default=1, help="같은 묶음을 이 횟수만큼 반복 측정 (2 이상이면 질문별 정답 횟수·흔들린 질문 표시)")
+    ap.add_argument("--round-wait", type=float, default=10.0, help="반복 측정에서 회차 사이 대기 초")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     if not find_api_key():  # 키 없이 돌면 모든 질문이 '오류'로 끝나 결과가 쓸모없다 → 시작 전에 멈춘다
@@ -455,6 +551,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     sets = SETS if args.set == "all" else (args.set,)
     questions = [q for q in load_questions(sets) if not args.only or q.id in args.only]
+    if args.repeat > 1:
+        return _main_repeat(args, sets, questions)
     print(f"질문 {len(questions)}개 실행 중 (질문 사이 {args.delay:g}초 대기, 끝난 뒤 한꺼번에 채점)...", flush=True)
     runs = run_questions(questions, load_datasets(), delay=args.delay, progress=_print_progress,  # 1단계: 정답 모름
                          quota_wait=args.quota_wait, quota_retries=args.quota_retries)
