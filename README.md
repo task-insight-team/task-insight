@@ -109,12 +109,16 @@
 
 ## 팀
 
-| GitHub | 맡은 부분 (커밋 이력 기준) |
-|---|---|
-| zslayer-dev | 데이터 엔진 · 테스트 · 평가(eval) · 데이터 · 문서 |
-| docie-rgb | AI 에이전트 |
-| victorymankang-dot | 화면(Streamlit) · 소개 홈페이지 · 문서 |
-| jhwksh | 화면(Streamlit) · 소개 홈페이지 |
+프로젝트 시작 때 정한 역할 분담입니다 (실명 대신 역할과 GitHub 계정으로 적습니다).
+
+| 역할 | GitHub | 맡은 부분 |
+|---|---|---|
+| AI 에이전트 (팀장) | docie-rgb | 질문 해석, 도구 선택, AI 출력 검증 (`agent/`) |
+| 데이터 엔지니어링 | zslayer-dev | CSV 업로드, 전처리, 분석 함수 (`engine/`, `data/`) |
+| 프론트엔드·시각화 | jhwksh | Streamlit 화면, Plotly 그래프, 질문 입력 UI (`ui/`, `app.py`) |
+| 통합·보고서 | victorymankang-dot | 결과 연결, 보고서, 테스트, 배포 (`tests/`, `docs/`) |
+
+실제 구현 중에는 폴더 단위 담당으로 정착했고, 화면·평가·문서는 서로 나눠 작업한 PR도 있습니다 (커밋 이력은 `git shortlog`).
 
 ## 제출 정보
 
