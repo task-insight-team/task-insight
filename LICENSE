@@ -19,16 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Exclusions (not covered by the MIT License above):
-
-- data/sample.csv: provided by the hackathon organizers as assignment material.
-  Rights belong to its original owner. Remove it or check the organizers' terms
-  before redistributing.
-- ui/homepage/images/: provenance to be confirmed by the team before release.
-  Until confirmed, these files are not covered by this license.
-- Third-party libraries and fonts loaded at runtime (pip packages listed in
-  requirements.txt, and CDN assets used by ui/homepage such as Pretendard,
-  three.js, Lenis and GSAP) remain under their own licenses.
