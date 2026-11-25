@@ -251,6 +251,11 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 .cafe p{color:var(--sub);font-size:14px;line-height:1.75}
 .cafe b{color:var(--text);font-weight:600}
 .cafe .flow{margin-top:12px;color:var(--text);font-size:13px}
+.demo-video{margin-top:28px}
+.demo-video .k{color:var(--red);font-size:13px;font-weight:600;letter-spacing:.04em;margin-bottom:12px}
+.demo-video .frame{position:relative;width:100%;aspect-ratio:16/9;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#000}
+.demo-video iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.demo-video p{margin-top:10px;color:var(--sub);font-size:13px;line-height:1.7}
 .cafe .go{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
 .cafe .go a{border:1px solid var(--red);border-radius:999px;padding:8px 16px;font-size:13px;color:var(--text);text-decoration:none}
 .cafe .go a:hover,.cafe .go a:focus-visible{background:var(--red);color:#fff}
@@ -421,6 +426,11 @@ footer .logo{color:#fff}
         <p><b>가상카페</b>는 한국어를 배우는 사람이 인터넷 속 카페에서 입장·주문·결제·착석을 연습하는 서비스입니다. 손님이 남긴 기록(4일, 1,950줄)을 위 앱의 <b>"내 CSV 올리기"</b>에 올려 같은 방식으로 질문합니다.</p>
         <p class="flow">입장 50 → 장바구니 32 → 결제 시작 12 → 결제 11 → 수령 11 → 착석 5</p>
         <p class="go"><a href="https://korean-friend-cafe.vercel.app/" target="_blank" rel="noopener">가상카페 열기 ↗</a><a href="https://korean-friend-cafe.vercel.app/stats" target="_blank" rel="noopener">카페 기록 현황 보기 ↗</a></p>
+      </div>
+      <div class="demo-video rv">
+        <div class="k">{ 시연 영상 }</div>
+        <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/iAeGh0sh05c" title="Task Insight 시연 영상 (가상카페 기록 분석)" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>
+        <p>홈페이지에서 시작해 앱으로 카페 기록을 분석하고, 카페의 기록 현황까지 보는 화면 녹화입니다. (말 없는 영상)</p>
       </div>
     </div>
   </div>
