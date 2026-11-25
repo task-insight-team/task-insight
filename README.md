@@ -94,7 +94,7 @@
 
 | 문서 | 내용 |
 |---|---|
-| [DevelopDoc/PRD.md](DevelopDoc/PRD.md) | 제출용: 문제 · 사용자 · 시나리오 · 범위 · 요구사항 |
+| [DevelopDoc/PRD.md](DevelopDoc/PRD.md) | 제출용: 문제 · 목표 · 사용자 · 기능 요구사항 · 리스크 · 마일스톤 |
 | [DevelopDoc/TECH_SPEC.md](DevelopDoc/TECH_SPEC.md) | 제출용: 아키텍처 · 모듈 · 안전 설계 · 테스트 · 배포 |
 | [DevelopDoc/WORK_UNITS.md](DevelopDoc/WORK_UNITS.md) | 제출용: 작업 단위별 완료 조건 체크리스트 |
 | [DevelopDoc/FINAL_CHECKLIST.md](DevelopDoc/FINAL_CHECKLIST.md) | 제출용: 최종 완료 체크리스트 |
