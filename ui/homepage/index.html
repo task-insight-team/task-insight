@@ -163,6 +163,8 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 #poc ol li::marker{color:var(--red);font-weight:700}
 #poc .later,#poc .risk{margin-top:18px;font-size:13px;line-height:1.7;color:var(--sub)}
 #poc .risk{color:var(--red)}
+#poc .ex{margin-top:18px;font-size:13px;line-height:1.7;color:var(--sub)}
+#poc .ex b{color:var(--red);margin-right:8px}
 #poc .go{display:inline-block;margin-top:24px;font-size:13px;font-weight:600;border-bottom:1px solid var(--red)}
 #poc .go[hidden]{display:none}
 
@@ -244,6 +246,19 @@ section{position:relative;padding:clamp(100px,14vw,200px) var(--pad)}
 .embed-note{margin-top:14px;font-size:13px;color:var(--muted);text-align:center}
 .embed-note a{color:var(--sub);text-decoration:underline;text-underline-offset:3px}
 .embed-note a:hover{color:var(--red)}
+.cafe{margin-top:28px;border:1px solid var(--line);border-radius:6px;padding:22px 24px}
+.cafe .k{color:var(--red);font-size:13px;font-weight:600;letter-spacing:.04em;margin-bottom:12px}
+.cafe p{color:var(--sub);font-size:14px;line-height:1.75}
+.cafe b{color:var(--text);font-weight:600}
+.cafe .flow{margin-top:12px;color:var(--text);font-size:13px}
+.demo-video{margin-top:28px}
+.demo-video .k{color:var(--red);font-size:13px;font-weight:600;letter-spacing:.04em;margin-bottom:12px}
+.demo-video .frame{position:relative;width:100%;aspect-ratio:16/9;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#000}
+.demo-video iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.demo-video p{margin-top:10px;color:var(--sub);font-size:13px;line-height:1.7}
+.cafe .go{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+.cafe .go a{border:1px solid var(--red);border-radius:999px;padding:8px 16px;font-size:13px;color:var(--text);text-decoration:none}
+.cafe .go a:hover,.cafe .go a:focus-visible{background:var(--red);color:#fff}
 .missing{margin-top:90px;display:grid;grid-template-columns:1fr 1fr;gap:28px}
 .mcard{border-top:1px solid var(--line);padding-top:24px}
 .mcard .k{color:var(--sub);font-size:14px}
@@ -406,6 +421,17 @@ footer .logo{color:#fff}
         <iframe class="embed-frame" id="appFrame" src="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/?embed=true&embed_options=dark_theme" title="Task Insight 분석 앱 (질문 입력, 분석 계획 승인, 결과 표시)" loading="lazy" allow="clipboard-write"></iframe>
         <p class="embed-note"><a href="https://task-insight-vojhzjrnxn7gnm7gkb8rgn.streamlit.app/" target="_blank" rel="noopener" data-t="embedFallback"></a></p>
       </div>
+      <div class="cafe rv">
+        <div class="k">{ 다른 데이터 · 가상카페 }</div>
+        <p><b>가상카페</b>는 한국어를 배우는 사람이 인터넷 속 카페에서 입장·주문·결제·착석을 연습하는 서비스입니다. 손님이 남긴 기록(4일, 1,950줄)을 위 앱의 <b>"내 CSV 올리기"</b>에 올려 같은 방식으로 질문합니다.</p>
+        <p class="flow">입장 50 → 장바구니 32 → 결제 시작 12 → 결제 11 → 수령 11 → 착석 5</p>
+        <p class="go"><a href="https://korean-friend-cafe.vercel.app/" target="_blank" rel="noopener">가상카페 열기 ↗</a><a href="https://korean-friend-cafe.vercel.app/stats" target="_blank" rel="noopener">카페 기록 현황 보기 ↗</a></p>
+      </div>
+      <div class="demo-video rv">
+        <div class="k">{ 시연 영상 }</div>
+        <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/iAeGh0sh05c" title="Task Insight 시연 영상 (가상카페 기록 분석)" loading="lazy" allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>
+        <p>홈페이지에서 시작해 앱으로 카페 기록을 분석하고, 카페의 기록 현황까지 보는 화면 녹화입니다. (말 없는 영상)</p>
+      </div>
     </div>
   </div>
   <div class="missing">
@@ -437,6 +463,7 @@ footer .logo{color:#fff}
   <h3 id="pocTitle"></h3>
   <p class="note"></p>
   <ol></ol>
+  <p class="ex" hidden><b>다른 확장 사례</b><span></span></p>
   <p class="later"></p>
   <p class="risk"></p>
   <a class="go" href="#" target="_blank" rel="noopener" hidden></a>
@@ -483,6 +510,7 @@ const DATA = {
         "현장 담당자에게 실제 질문 10~20개 수집 후 평가 묶음으로 정리",
         "기존 원칙 점검: 일반 CSV 컬럼 매핑 규칙(#34)과 새 도구가 충돌하지 않는지 확인"
       ],
+      example:"가상카페(한국어 연습 공간) 학습 기록으로 어려운 장면을 찾아 개선 (예시 데이터로 확인, 서비스 연동은 향후)",
       later:"이후 단계: 현장 입력 폼, API 계층, 음성·스마트안경(참고 정보까지만, 안전 제어에는 쓰지 않음)",
       risk:"가장 큰 위험: 현장이 이런 질문을 실제로 하는지 아직 검증되지 않았습니다." }
   ]
@@ -596,6 +624,8 @@ DATA.proposals.forEach(p => {
     poc.querySelector("h3").textContent = `${p.name} · ${p.scopeTitle}`;
     poc.querySelector(".note").textContent = p.scopeNote;
     poc.querySelector("ol").innerHTML = p.scope.map(s => `<li>${s}</li>`).join("");
+    const ex = poc.querySelector(".ex");  /* 확장 예시(선택): 없으면 숨김. 구현된 기능이 아니라 예시임을 문구에 밝힘 */
+    ex.hidden = !p.example; ex.querySelector("span").textContent = p.example || "";
     poc.querySelector(".later").textContent = p.later;
     poc.querySelector(".risk").textContent = p.risk;
     const link = poc.querySelector("a");  /* 항목마다 링크·문구를 받음. 링크가 없으면 숨김 */
